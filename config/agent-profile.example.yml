@@ -1,0 +1,16 @@
+# 仅作配置记录示例；不要在此保存 DeepSeek、Tushare 或其他供应商密钥。
+market: CN-A
+data_service_url: http://127.0.0.1:8765
+mode: research-only
+allow_broker_access: false
+allow_order_submission: false
+default_adjustment: qfq
+default_report_sections:
+  - facts_and_sources
+  - technicals
+  - fundamentals
+  - valuation
+  - events
+  - scenarios
+  - research_action
+  - risks

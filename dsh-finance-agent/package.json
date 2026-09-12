@@ -1,0 +1,11 @@
+{
+  "name": "dsh-finance-agent",
+  "version": "0.1.0",
+  "description": "Local read-only A-share data tools and research skills for DeepSeek Harness.",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "skills"],
+  "keywords": ["dsh-plugin", "deepseek-harness", "a-share", "finance", "research"],
+  "license": "MIT",
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}

@@ -597,13 +597,20 @@ def markdown_cell(value):
 
 
 def daily_report_response(candidate_limit: int = 5):
+    portfolio = portfolio_response()
+    if not portfolio["holdings"]:
+        return {
+            "as_of": str(date.today()), "is_trading_day": None, "has_holdings": False,
+            "empty_reason": "no_holdings", "markdown": "",
+            "note": "未保存持仓，不生成日报。请先在 DSH Web 中调用 set_portfolio 保存持仓。",
+        }
     calendar = trading_day_response()
     if not calendar["is_trading_day"]:
         return {
-            "as_of": str(date.today()), "is_trading_day": False, "markdown": f"# A股每日研究简报\n\n{date.today()} 不是交易日，本日不生成开盘前建议。",
-            "source": calendar["source"],
+            "as_of": str(date.today()), "is_trading_day": False, "has_holdings": True,
+            "empty_reason": "non_trading_day", "markdown": "", "source": calendar["source"],
+            "note": "今日不是交易日，不生成日报。",
         }
-    portfolio = portfolio_response()
     def analyze_holding(holding):
         analysis = analyze_stock_response(holding["symbol"], 7)
         analysis["holding"] = holding
@@ -659,7 +666,7 @@ def daily_report_response(candidate_limit: int = 5):
     if report_warnings:
         lines.extend(["", "## 数据缺失", ""] + [f"- {warning}" for warning in report_warnings])
     return {
-        "as_of": str(date.today()), "is_trading_day": True, "portfolio": holdings,
+        "as_of": str(date.today()), "is_trading_day": True, "has_holdings": True, "portfolio": holdings,
         "weekly_events": weekly, "monthly_events": monthly, "candidates": candidates,
         "warnings": report_warnings, "markdown": "\n".join(lines),
     }

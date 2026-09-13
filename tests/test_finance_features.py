@@ -40,6 +40,16 @@ spec.loader.exec_module(server)
 
 
 class FinanceFeatureTests(unittest.TestCase):
+    def test_daily_report_is_empty_without_holdings(self):
+        with patch.object(server, "portfolio_response", return_value={"holdings": []}), \
+             patch.object(server, "trading_day_response") as calendar, \
+             patch.object(server, "candidate_ranking_response") as candidates:
+            result = server.daily_report_response(5)
+        self.assertEqual(result["markdown"], "")
+        self.assertEqual(result["empty_reason"], "no_holdings")
+        calendar.assert_not_called()
+        candidates.assert_not_called()
+
     def test_stock_search_prefers_exact_symbol(self):
         result = server.stock_search_response("600519", 10)
         self.assertEqual(result["matches"][0], {"symbol": "600519", "name": "贵州茅台"})

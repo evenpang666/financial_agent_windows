@@ -32,6 +32,7 @@ def load_config(path: Path) -> dict:
         "data_service_url": "http://127.0.0.1:8765",
         "scheduled_time": "08:55",
         "candidate_limit": 5,
+        "report_site_url": "http://127.0.0.1:8766",
         "webhook_type": "generic",
         "webhook_url": "",
     }
@@ -71,6 +72,14 @@ def post_webhook(url: str, kind: str, markdown: str):
             raise RuntimeError(f"Webhook 返回 HTTP {response.status}")
 
 
+def notify_report_site(base_url: str, report_date: str):
+    body = json.dumps({"date": report_date}, ensure_ascii=False).encode("utf-8")
+    request = Request(str(base_url).rstrip("/") + "/api/publish", data=body, method="POST", headers={"Content-Type": "application/json; charset=utf-8"})
+    with urlopen(request, timeout=5) as response:
+        if response.status >= 300:
+            raise RuntimeError(f"日报网页返回 HTTP {response.status}")
+
+
 def load_state() -> dict:
     if not STATE_FILE.exists():
         return {}
@@ -104,13 +113,21 @@ def run_once(config: dict, force: bool = False) -> bool:
     base_url = str(config["data_service_url"]).rstrip("/")
     query = urlencode({"candidate_limit": int(config.get("candidate_limit", 5))})
     report = get_json(f"{base_url}/v1/daily-report?{query}")
+    if report.get("empty_reason") == "no_holdings":
+        log("未保存持仓，不生成、不归档且不推送日报。")
+        return False
     if not report.get("is_trading_day"):
-        log("今日不是交易日，不推送开盘前简报。")
+        log("今日不是交易日，不生成或推送开盘前简报。")
         return False
     markdown = str(report.get("markdown", "")).strip()
     if not markdown:
         raise RuntimeError("数据服务未返回简报正文。")
     report_path = archive_report(today, markdown)
+    try:
+        notify_report_site(str(config.get("report_site_url", "http://127.0.0.1:8766")), today)
+        log("本地日报网页已收到更新通知。")
+    except (HTTPError, URLError, OSError, RuntimeError) as exc:
+        log(f"日报已归档，但网页即时通知失败：{exc}；页面下次刷新时仍会读取该日报。")
     webhook_url = str(config.get("webhook_url", "")).strip()
     if webhook_url:
         post_webhook(webhook_url, str(config.get("webhook_type", "generic")), markdown)

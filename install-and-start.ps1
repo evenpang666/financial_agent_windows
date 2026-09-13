@@ -13,6 +13,7 @@ $pushScript = Join-Path $projectRoot 'scripts\daily_push.py'
 $pushConfig = Join-Path $projectRoot 'config\daily-push.json'
 $pushConfigExample = Join-Path $projectRoot 'config\daily-push.example.json'
 $taskInstaller = Join-Path $projectRoot 'scripts\install-daily-task.ps1'
+$reportWebScript = Join-Path $projectRoot 'scripts\report_web_server.py'
 
 function Require-Command([string]$Name, [string]$Message) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -96,6 +97,21 @@ try {
     if (-not $pushRunning) {
         Start-Process -FilePath $venvPython -ArgumentList @($pushScript, '--config', $pushConfig) -WindowStyle Hidden
     }
+}
+
+$reportSiteRunning = Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue
+if (-not $reportSiteRunning) {
+    Write-Host 'Starting the local-network report website...'
+    Start-Process -FilePath $venvPython -ArgumentList @($reportWebScript) -WindowStyle Hidden
+    Start-Sleep -Seconds 1
+}
+
+Write-Host 'Report website (this computer): http://127.0.0.1:8766'
+$lanAddresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+    Select-Object -ExpandProperty IPAddress -Unique
+foreach ($address in $lanAddresses) {
+    Write-Host "Report website (LAN): http://${address}:8766"
 }
 
 Write-Host 'Opening dsh web...'

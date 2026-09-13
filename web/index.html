@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="本地 A 股开盘前日报">
+  <title>A 股开盘前日报</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="A 股开盘前日报首页">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="M5 19.5 10.1 14l3.6 3.1L23 7.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7.5h5v5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span>A 股日报</span>
+    </a>
+    <div class="topbar-meta"><span class="live-dot" aria-hidden="true"></span><span id="connectionState">正在连接</span></div>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="pageTitle">
+      <p class="eyebrow">MARKET INTELLIGENCE</p>
+      <div class="intro-heading">
+        <div><h1 id="pageTitle">开盘前日报</h1><p id="updatedAt">正在连接本地日报服务</p></div>
+        <div class="actions">
+          <label class="select-control" for="reportDate"><span>报告日期</span><select id="reportDate" aria-label="选择历史日报" disabled><option>暂无日报</option></select></label>
+          <button id="refreshButton" type="button"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16 7.25A6.5 6.5 0 1 0 16.2 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 3.75v3.5h-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>刷新</button>
+        </div>
+      </div>
+    </section>
+    <section class="report-shell" aria-live="polite">
+      <div class="report-topline" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div id="statusCard" class="status-card">
+        <div class="status-icon" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="M14 6v8l5 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="14" cy="14" r="9" stroke="currentColor" stroke-width="1.8"/></svg></div>
+        <div><p class="status-kicker">WAITING FOR DATA</p><h2>尚无可展示的日报</h2><p>请先在 DSH Web 中保存至少一只持仓。交易日上午生成后，此页面会自动更新。</p></div>
+      </div>
+      <article id="report" class="report" hidden></article>
+    </section>
+  </main>
+  <footer><span>仅限本机与局域网内访问</span><span>DSH Finance Agent</span></footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>

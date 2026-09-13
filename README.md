@@ -1,14 +1,13 @@
 # Windows：搭建 DeepSeek Harness A 股研究智能体
 
-本包搭建的是**只读的 A 股研究智能体**：查询行情、计算技术指标、阅读财报与公告、生成“关注 / 观望 / 复核”这类研究动作建议。它不连接券商账户、不发送交易指令、不自动买卖。
+本包搭建的是**只读的 A 股分析智能体**：查询行情、计算技术指标、阅读财报与公告，并基于客观指标给出明确买卖结论以及合计为 100% 的买入/卖出倾向。倾向百分比不是仓位或涨跌概率；系统不连接券商账户、不发送交易指令、不自动买卖。
 
 ## 1. 最终组成
 
 ```text
 DeepSeek Harness (dsh)
-├── dsh-astock-research：现成的个股/公告/财报研究插件（可选但建议）
 └── dsh-finance-agent：本包提供
-    ├── 10 个研究工具（其中 1 个仅保存本地持仓）
+    ├── 16 个研究工具（检索、短长期分析、交易日、日报与候选排行）
     └── 7 个内置研究 Skills
             ↑
     Python 本地数据服务（AKShare，默认 127.0.0.1:8765）
@@ -21,7 +20,6 @@ DeepSeek Harness (dsh)
 | Node.js 22 LTS | 运行 dsh 和插件 | 是 |
 | Python 3.11+ | 本地数据和指标服务 | 是 |
 | `@deepseek-ai/dsh` | Agent 运行环境 | 是 |
-| `dsh-astock-research` | 现成的 A 股检索、公告、财报功能 | 建议 |
 | 本包 `dsh-finance-agent` | 本地行情、指标、估值工具与 Skills | 是 |
 | AKShare / pandas / numpy | 数据适配与指标计算 | 是 |
 
@@ -38,9 +36,9 @@ python --version
 
 - 安装 `dsh` 与 `pnpm`；
 - 创建 `.venv` 并安装 Python 依赖；
-- 安装外部插件 `dsh-astock-research`；
 - 以本地目录注册 `dsh-finance-agent`；
 - 在独立窗口启动本地数据服务，并启动 `dsh web`。
+- 在后台启动每日推送服务；它会在北京时间每个交易日 08:55 开始并行汇总，目标在 09:00（开盘前30分钟）前送达。
 
 已完成安装时，双击启动器会跳过安装步骤，直接启动本地数据服务和 `dsh web`。
 
@@ -59,7 +57,6 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```powershell
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add dsh-astock-research
 dsh plugin --profile web add .\dsh-finance-agent
 ```
 
@@ -118,12 +115,42 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 | `set_portfolio` | 保存代码、可选成本/数量和研究备注 | 仅写入本项目 `data/portfolio.json`，不执行交易 |
 | `get_market_brief` | 指数快照与可得市场快讯 | 快讯是待核验线索，不等同于价格影响 |
 | `get_market_movers` | 当日涨跌幅靠前标的的研究候选池 | 异动不构成推荐或追涨信号 |
+| `stock_search` | 按 6 位代码或名称检索 A 股 | 名称有歧义时返回多个匹配项 |
+| `get_trading_day` | 使用交易日历判断指定日期 | 每日任务在非交易日跳过 |
+| `get_market_events` | 按 7 日、30 日等窗口取得事件线索 | 快讯需以公告或权威原文复核 |
+| `get_candidate_ranking` | 按透明规则生成热门研究候选排行 | 排名不是买入顺序 |
+| `analyze_stock` | 汇总历史/最新财务、行情、指标、估值与公告 | 输出短长期判断、买入/卖出倾向和明确结论 |
+| `get_daily_research_report` | 生成含买卖建议的持仓表、周/月事件和候选排行 | 数据较多时可能需要较长时间 |
 
 AKShare 适合原型和个人研究；任何公开发布、收费服务或高频使用前，都应改接已获授权且有服务等级承诺的数据源，并审查数据授权条款。
 
 持仓清单仅用于研究上下文，默认保存于本地 `data/portfolio.json`，不会包含券商登录信息或交易凭证。该文件已加入忽略列表；不要把它上传、共享或提交到版本库。
 
-## 7. 内置 Skills
+## 7. 每日开盘前推送配置
+
+首次运行 `install-and-start.ps1` 会将 `config/daily-push.example.json` 复制为不纳入 Git 的 `config/daily-push.json`，并注册 Windows 计划任务 `DSH A-Share Pre-open Research`。任务每天北京时间 08:55 开始并行汇总，目标于 09:00 前送达；数据服务会再次核验交易日，因此周末和休市日不会推送。若系统不允许注册任务，启动器会自动退回为当前登录会话内的后台调度器。
+
+默认情况下，简报归档到 `data/reports/YYYY-MM-DD.md`。如需远程推送，在配置中填写 Webhook：
+
+```json
+{
+  "enabled": true,
+  "scheduled_time": "08:55",
+  "candidate_limit": 5,
+  "webhook_type": "feishu",
+  "webhook_url": "https://your.invalid/your-webhook"
+}
+```
+
+`webhook_type` 支持 `feishu`、`wecom`、`dingtalk` 和 `generic`。更推荐把地址放入环境变量 `FINANCE_AGENT_WEBHOOK_URL`，避免把凭证写入文件。配置文件已加入 `.gitignore`。
+
+可手动验证一次；非交易日会正常跳过，`--force` 只忽略重复发送状态，不绕过交易日检查：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\daily_push.py --once --force
+```
+
+## 8. 内置 Skills
 
 `dsh-finance-agent/skills/` 中的文件随插件自动加载：
 
@@ -137,9 +164,9 @@ AKShare 适合原型和个人研究；任何公开发布、收费服务或高频
 | `market-event-briefing` | 汇总每日/每周市场大事并分析可能传导路径时 |
 | `daily-stock-candidate-screen` | 生成每日待研究候选池时 |
 
-其中“动作建议”只能使用研究性表述，例如“加入观察名单”“等待公告确认”“降低单一标的暴露”“复核估值假设”。不得把它改写成个性化买卖指令。
+分析结果会使用“建议买入 / 建议持有观察 / 建议卖出 / 信息不足，暂缓决策”，并输出买入、卖出倾向百分比。百分比是可复核的证据方向评分，不是建议仓位，也不会触发交易。
 
-## 8. 推荐提问方式
+## 9. 推荐提问方式
 
 ```text
 请研究 600519，数据截止到最近一个可得交易日。
@@ -147,19 +174,20 @@ AKShare 适合原型和个人研究；任何公开发布、收费服务或高频
 1. 已确认事实（带来源与日期）；
 2. 趋势、基本面、估值和事件的分别判断；
 3. 乐观/中性/悲观三种情景及其失效条件；
-4. 研究动作建议：关注、观望、复核或排除，并说明证据；
-5. 风险清单。
-不要给出买卖指令、仓位比例或收益承诺。
+4. 分别给出短期和长期建议；
+5. 总结为建议买入、建议持有观察、建议卖出或信息不足，并给出合计100%的买入/卖出倾向；
+6. 风险清单和结论失效条件。
+百分比不得解释为仓位或涨跌概率，不要作收益承诺。
 ```
 
-## 9. 数据时效和责任边界
+## 10. 数据时效和责任边界
 
 - 工具的 `as_of` 字段是唯一可依赖的数据时间；没有该字段就不要把数据说成实时。
 - 行情、复权、停牌、除权除息、公告归档都可能影响结论；需要交易用途时请从权威/授权数据源复核。
 - 历史回测不代表未来结果。回测必须包含手续费、滑点、涨跌停、停牌与样本外验证。
-- 本包不构成证券投资咨询服务或投资建议；使用者自行作出并承担投资决策。
+- 本包输出的是程序化买卖建议和证据倾向分，不是持牌证券投资咨询；百分比不是仓位或收益概率，使用者自行作出并承担投资决策。
 
-## 10. 常见问题
+## 11. 常见问题
 
 **`dsh` 不是内部或外部命令**：关闭并重开 PowerShell；确认 Node.js 已加入 PATH，再重新执行 `npm install -g @deepseek-ai/dsh pnpm`。
 

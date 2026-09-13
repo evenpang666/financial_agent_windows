@@ -1,2 +1,6 @@
 .venv/
 data/portfolio.json
+data/daily-push-state.json
+data/market-events.json
+data/reports/
+config/daily-push.json

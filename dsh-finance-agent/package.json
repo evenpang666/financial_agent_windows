@@ -1,7 +1,7 @@
 {
   "name": "dsh-finance-agent",
-  "version": "0.1.0",
-  "description": "Local read-only A-share data tools and research skills for DeepSeek Harness.",
+  "version": "0.3.0",
+  "description": "Local read-only A-share analysis tools with evidence-based buy/sell tendency scores and scheduled reports.",
   "type": "module",
   "main": "index.js",
   "files": ["index.js", "cordis.patch.yml", "skills"],

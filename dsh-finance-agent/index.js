@@ -36,9 +36,10 @@ export function apply(ctx, config = {}) {
   }
 
   async function call(path, options = {}) {
+    const { timeoutMs = 30000, ...fetchOptions } = options
     let response
     try {
-      response = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(30000), ...options })
+      response = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(timeoutMs), ...fetchOptions })
     } catch (error) {
       throw new Error(`本地股票数据服务不可用（${baseUrl}）。请启动 scripts/stock_data_server.py；原始错误：${error.message}`)
     }
@@ -53,6 +54,15 @@ export function apply(ctx, config = {}) {
   }
   const register = (definition) => ctx.tools.register({ output: OUTPUT, ...definition })
 
+  register({
+    name: 'stock_search',
+    description: 'Search the local A-share universe by six-digit symbol or company name before research. Returns matching symbols and names.',
+    parameters: { type: 'object', properties: {
+      query: { type: 'string', minLength: 1, description: 'Six-digit symbol or part/all of a company name.' },
+      limit: { type: 'integer', minimum: 1, maximum: 50 },
+    }, required: ['query'], additionalProperties: false },
+    execute: ({ query, limit = 10 }) => call(`/v1/search?query=${encodeURIComponent(query)}&limit=${limit}`),
+  })
   register({
     name: 'get_saved_portfolio',
     description: 'Read the locally saved research portfolio. It contains only user-supplied symbols, optional cost basis, shares, and notes; it has no broker connection.',
@@ -76,16 +86,43 @@ export function apply(ctx, config = {}) {
     }),
   })
   register({
+    name: 'get_trading_day',
+    description: 'Check whether a date is an official mainland China A-share trading day.',
+    parameters: { type: 'object', properties: { date: { type: 'string', description: 'YYYY-MM-DD; defaults to today.' } }, additionalProperties: false },
+    execute: ({ date = '' }) => call(`/v1/trading-day?date=${encodeURIComponent(date)}`),
+  })
+  register({
     name: 'get_market_brief',
     description: 'Get an A-share index snapshot and recent market-event headlines for daily or weekly research. Headlines are leads to verify, not proof of price impact.',
     parameters: { type: 'object', properties: { event_limit: { type: 'integer', minimum: 1, maximum: 50 } }, additionalProperties: false },
     execute: ({ event_limit = 20 }) => call(`/v1/market-brief?event_limit=${event_limit}`),
   })
   register({
+    name: 'get_market_events',
+    description: 'Get dated A-share market-event leads for an explicit daily, weekly or monthly lookback window.',
+    parameters: { type: 'object', properties: {
+      days: { type: 'integer', minimum: 1, maximum: 90 },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+    }, additionalProperties: false },
+    execute: ({ days = 7, limit = 20 }) => call(`/v1/market-events?days=${days}&limit=${limit}`),
+  })
+  register({
     name: 'get_market_movers',
     description: 'Get the day’s leading A-share gainers and losers as an evidence-based research universe. It is not a stock recommendation or a signal to chase a move.',
     parameters: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } }, additionalProperties: false },
     execute: ({ limit = 20 }) => call(`/v1/market-movers?limit=${limit}`),
+  })
+  register({
+    name: 'get_candidate_ranking',
+    description: 'Rank 1-20 non-ST A-share research candidates with a transparent momentum, liquidity and valuation score. Not a buy list.',
+    parameters: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20 } }, additionalProperties: false },
+    execute: ({ limit = 5 }) => call(`/v1/candidate-ranking?limit=${limit}`),
+  })
+  register({
+    name: 'get_daily_research_report',
+    description: 'Build the complete trading-day pre-open report: portfolio table, short/long views, weekly/monthly events, and ranked candidates.',
+    parameters: { type: 'object', properties: { candidate_limit: { type: 'integer', minimum: 1, maximum: 20 } }, additionalProperties: false },
+    execute: ({ candidate_limit = 5 }) => call(`/v1/daily-report?candidate_limit=${candidate_limit}`, { timeoutMs: 180000 }),
   })
 
   register({
@@ -123,6 +160,15 @@ export function apply(ctx, config = {}) {
     description: '获取数据源可用的PE、PB等估值快照。它不是完整估值模型；使用时必须标记数据日期和不可用字段。',
     parameters: { type: 'object', properties: { symbol: { type: 'string' } }, required: ['symbol'], additionalProperties: false },
     execute: ({ symbol }) => call(`/v1/valuation?symbol=${code(symbol)}`),
+  })
+  register({
+    name: 'analyze_stock',
+    description: 'Analyze one A-share using historical/latest financials, technicals, valuation and announcements; return short/long views plus explicit buy/sell tendency percentages and a conclusion.',
+    parameters: { type: 'object', properties: {
+      symbol: { type: 'string' },
+      announcement_days: { type: 'integer', minimum: 1, maximum: 730 },
+    }, required: ['symbol'], additionalProperties: false },
+    execute: ({ symbol, announcement_days = 180 }) => call(`/v1/analysis?symbol=${code(symbol)}&announcement_days=${announcement_days}`),
   })
 
   ctx.logger?.info?.('finance-agent: local data tools and %d bundled skills registered (baseUrl=%s)', Object.keys(DESCRIPTIONS).length, baseUrl)

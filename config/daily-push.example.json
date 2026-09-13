@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "data_service_url": "http://127.0.0.1:8765",
+  "scheduled_time": "08:55",
+  "candidate_limit": 5,
+  "webhook_type": "generic",
+  "webhook_url": ""
+}

@@ -9,6 +9,10 @@ $projectRoot = $PSScriptRoot
 $pluginPath = Join-Path $projectRoot 'dsh-finance-agent'
 $venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $serverScript = Join-Path $projectRoot 'scripts\stock_data_server.py'
+$pushScript = Join-Path $projectRoot 'scripts\daily_push.py'
+$pushConfig = Join-Path $projectRoot 'config\daily-push.json'
+$pushConfigExample = Join-Path $projectRoot 'config\daily-push.example.json'
+$taskInstaller = Join-Path $projectRoot 'scripts\install-daily-task.ps1'
 
 function Require-Command([string]$Name, [string]$Message) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -45,7 +49,6 @@ if (-not $dshCommand -or -not (Test-Path $dshCommand)) {
 
 $profileNodeModules = Join-Path $env:USERPROFILE '.dsh\profiles\web\node_modules'
 $localPluginInstalled = Test-Path (Join-Path $profileNodeModules 'dsh-finance-agent')
-$externalPluginInstalled = Test-Path (Join-Path $profileNodeModules 'dsh-astock-research')
 $venvReady = Test-Path $venvPython
 
 if (-not (Test-Path $venvPython)) {
@@ -64,25 +67,35 @@ if (-not $localPluginInstalled) {
     & $dshCommand plugin --profile web add $pluginPath
 }
 
-if (-not $externalPluginInstalled) {
-    Write-Host 'Installing external dsh-astock-research plugin...'
-    & $dshCommand plugin --profile web add dsh-astock-research
-}
-
-if ($dshCommand -and $venvReady -and $localPluginInstalled -and $externalPluginInstalled) {
+if ($dshCommand -and $venvReady -and $localPluginInstalled) {
     Write-Host 'All components are already installed; starting services...'
 }
 
 $dataServerRunning = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
 if (-not $dataServerRunning) {
-    Write-Host 'Starting the local stock-data service in a separate window...'
+    Write-Host 'Starting the local stock-data service...'
     Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-        '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command',
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
         "& '$venvPython' '$serverScript'"
-    )
+    ) -WindowStyle Hidden
     Start-Sleep -Seconds 2
 } else {
     Write-Host 'A service is already listening on port 8765; leaving it running.'
+}
+
+if (-not (Test-Path $pushConfig)) {
+    Copy-Item -LiteralPath $pushConfigExample -Destination $pushConfig
+    Write-Host "Created daily push config: $pushConfig"
+}
+try {
+    & $taskInstaller
+} catch {
+    Write-Warning "Could not install the Windows scheduled task; starting a background scheduler for this login instead. $($_.Exception.Message)"
+    $pushRunning = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*daily_push.py*' }
+    if (-not $pushRunning) {
+        Start-Process -FilePath $venvPython -ArgumentList @($pushScript, '--config', $pushConfig) -WindowStyle Hidden
+    }
 }
 
 Write-Host 'Opening dsh web...'

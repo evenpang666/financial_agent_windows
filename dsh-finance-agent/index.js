@@ -113,6 +113,12 @@ export function apply(ctx, config = {}) {
     execute: ({ limit = 20 }) => call(`/v1/market-movers?limit=${limit}`),
   })
   register({
+    name: 'get_market_panorama',
+    description: 'Get the A-share market panorama: international events, domestic policy, social/attention sentiment, market breadth, risk level, reference position range, and the adjustment applied to stock buy/sell tendency percentages.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    execute: () => call('/v1/market-panorama', { timeoutMs: 120000 }),
+  })
+  register({
     name: 'get_candidate_ranking',
     description: 'Rank 1-20 non-ST A-share research candidates with a transparent momentum, liquidity and valuation score. Not a buy list.',
     parameters: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20 } }, additionalProperties: false },
@@ -120,7 +126,7 @@ export function apply(ctx, config = {}) {
   })
   register({
     name: 'get_daily_research_report',
-    description: 'Build the complete trading-day pre-open report: portfolio table, short/long views, weekly/monthly events, and ranked candidates.',
+    description: 'Build the trading-day pre-open report with market panorama and ranked candidates; include the portfolio table and short/long views only when holdings are saved.',
     parameters: { type: 'object', properties: { candidate_limit: { type: 'integer', minimum: 1, maximum: 20 } }, additionalProperties: false },
     execute: ({ candidate_limit = 5 }) => call(`/v1/daily-report?candidate_limit=${candidate_limit}`, { timeoutMs: 180000 }),
   })
@@ -156,6 +162,16 @@ export function apply(ctx, config = {}) {
     execute: ({ symbol, start = '', end = '', limit = 20 }) => call(`/v1/announcements?symbol=${code(symbol)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&limit=${limit}`),
   })
   register({
+    name: 'get_related_large_enterprises',
+    description: 'Identify the target A-share industry, select up to five same-industry leaders by total market capitalization, and retrieve their recent CNINFO announcements for context and risk checks.',
+    parameters: { type: 'object', properties: {
+      symbol: { type: 'string' },
+      days: { type: 'integer', minimum: 1, maximum: 180 },
+      limit: { type: 'integer', minimum: 1, maximum: 5 },
+    }, required: ['symbol'], additionalProperties: false },
+    execute: ({ symbol, days = 30, limit = 3 }) => call(`/v1/related-enterprises?symbol=${code(symbol)}&days=${days}&limit=${limit}`, { timeoutMs: 120000 }),
+  })
+  register({
     name: 'get_valuation',
     description: '获取数据源可用的PE、PB等估值快照。它不是完整估值模型；使用时必须标记数据日期和不可用字段。',
     parameters: { type: 'object', properties: { symbol: { type: 'string' } }, required: ['symbol'], additionalProperties: false },
@@ -163,7 +179,7 @@ export function apply(ctx, config = {}) {
   })
   register({
     name: 'analyze_stock',
-    description: 'Analyze one A-share using historical/latest financials, technicals, valuation and announcements; return short/long views plus explicit buy/sell tendency percentages and a conclusion.',
+    description: 'Analyze one A-share using financials, technicals, valuation, company announcements, dated market-context coverage, and recent announcements from same-industry large-cap leaders.',
     parameters: { type: 'object', properties: {
       symbol: { type: 'string' },
       announcement_days: { type: 'integer', minimum: 1, maximum: 730 },

@@ -61,7 +61,7 @@ function renderMarkdown(markdown) {
   return html.join('')
 }
 
-function showEmpty(title = '尚无可展示的日报', message = '请先在 DSH Web 中保存至少一只持仓。交易日上午生成后，此页面会自动更新。', isError = false) {
+function showEmpty(title = '尚无可展示的日报', message = '交易日上午生成后，此页面会自动展示市场全景、推荐股，以及可用的持仓建议。', isError = false) {
   statusCard.hidden = false
   statusCard.classList.toggle('error', isError)
   statusCard.querySelector('h2').textContent = title

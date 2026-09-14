@@ -7,4 +7,8 @@ if errorlevel 1 (
   echo.
   echo Startup failed. Review the message above, then press any key to close this window.
   pause >nul
+) else (
+  echo.
+  echo Services are ready. Press any key to close this window.
+  pause >nul
 )

@@ -33,6 +33,43 @@ function Find-DshCommand {
     return $null
 }
 
+function Get-NormalizedPath([string]$Path, [string]$BasePath = '') {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    $candidate = if ([System.IO.Path]::IsPathRooted($Path)) {
+        $Path
+    } elseif ($BasePath) {
+        Join-Path $BasePath $Path
+    } else {
+        $Path
+    }
+    try {
+        return (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path.TrimEnd('\\')
+    } catch {
+        return [System.IO.Path]::GetFullPath($candidate).TrimEnd('\\')
+    }
+}
+
+function Test-LocalPluginRegistration([string]$ProfileRoot, [string]$ExpectedPluginPath) {
+    $manifestPath = Join-Path $ProfileRoot 'package.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        return $false
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $spec = [string]$manifest.dependencies.'dsh-finance-agent'
+        if (-not $spec.StartsWith('link:')) {
+            return $false
+        }
+        $registeredPath = Get-NormalizedPath $spec.Substring(5) $ProfileRoot
+        $expectedPath = Get-NormalizedPath $ExpectedPluginPath
+        return $registeredPath -and $expectedPath -and $registeredPath.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
 Require-Command node 'Node.js is not available in PATH. Close and reopen PowerShell after installing Node.js, then run this script again.'
 Require-Command npm 'npm is not available in PATH. Close and reopen PowerShell after installing Node.js, then run this script again.'
 Require-Command python 'Python 3.11 or later is required. Install Python and run this script again.'
@@ -49,7 +86,8 @@ if (-not $dshCommand -or -not (Test-Path $dshCommand)) {
 }
 
 $profileNodeModules = Join-Path $env:USERPROFILE '.dsh\profiles\web\node_modules'
-$localPluginInstalled = Test-Path (Join-Path $profileNodeModules 'dsh-finance-agent')
+$profileRoot = Split-Path -Parent $profileNodeModules
+$localPluginInstalled = Test-LocalPluginRegistration $profileRoot $pluginPath
 $venvReady = Test-Path $venvPython
 
 if (-not (Test-Path $venvPython)) {
@@ -64,8 +102,36 @@ if (-not $venvReady) {
 }
 
 if (-not $localPluginInstalled) {
-    Write-Host 'Registering the local dsh-finance-agent plugin...'
+    Write-Host 'Registering the local dsh-finance-agent plugin for this project path...'
+    $oldManifestPath = Join-Path $profileRoot 'package.json'
+    $oldPluginRegistered = $false
+    if (Test-Path -LiteralPath $oldManifestPath) {
+        try {
+            $oldManifest = Get-Content -LiteralPath $oldManifestPath -Raw | ConvertFrom-Json
+            $oldPluginRegistered = $null -ne $oldManifest.dependencies.'dsh-finance-agent'
+        } catch {
+            $oldPluginRegistered = $true
+        }
+    }
+    if ($oldPluginRegistered) {
+        Write-Host 'Removing stale dsh-finance-agent registration...'
+        & $dshCommand plugin --profile web remove dsh-finance-agent
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not remove the stale dsh-finance-agent registration (exit code $LASTEXITCODE)."
+        }
+    }
     & $dshCommand plugin --profile web add $pluginPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not register dsh-finance-agent for the current project path (exit code $LASTEXITCODE)."
+    }
+    & $dshCommand plugin --profile web install
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not install the current dsh-finance-agent registration (exit code $LASTEXITCODE)."
+    }
+    if (-not (Test-LocalPluginRegistration $profileRoot $pluginPath)) {
+        throw 'dsh-finance-agent registration still does not point to this project after installation.'
+    }
+    $localPluginInstalled = $true
 }
 
 if ($dshCommand -and $venvReady -and $localPluginInstalled) {
@@ -114,5 +180,14 @@ foreach ($address in $lanAddresses) {
     Write-Host "Report website (LAN): http://${address}:8766"
 }
 
-Write-Host 'Opening dsh web...'
-& $dshCommand web
+${dshWebRunning} = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
+if ($dshWebRunning) {
+    Write-Host 'DSH Web is already running on port 3080; reusing the existing session.'
+    Write-Host 'Use the browser tab that DSH Web opened previously. Close that session first if you need to start a new one.'
+} else {
+    Write-Host 'Opening dsh web...'
+    & $dshCommand web
+    if ($LASTEXITCODE -ne 0) {
+        throw "dsh web exited with code $LASTEXITCODE."
+    }
+}

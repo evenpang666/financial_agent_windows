@@ -38,18 +38,18 @@ class DailyPushTests(unittest.TestCase):
             self.assertFalse(daily_push.run_once(config, force=True))
             post.assert_not_called()
 
-    def test_no_holdings_does_not_archive_or_push(self):
+    def test_no_holdings_still_archives_and_pushes_partial_report(self):
         config = {"enabled": True, "data_service_url": "http://test", "candidate_limit": 5, "webhook_url": "http://hook"}
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(daily_push, "STATE_FILE", Path(directory) / "state.json"), \
              patch.object(daily_push, "REPORT_DIR", Path(directory) / "reports"), \
-             patch.object(daily_push, "get_json", return_value={"is_trading_day": None, "empty_reason": "no_holdings", "markdown": ""}), \
+             patch.object(daily_push, "get_json", return_value={"is_trading_day": True, "has_holdings": False, "markdown": "# 市场全景\n\n## 热门股票推荐排行"}), \
              patch.object(daily_push, "notify_report_site") as notify, \
              patch.object(daily_push, "post_webhook") as post:
-            self.assertFalse(daily_push.run_once(config, force=True))
-            post.assert_not_called()
-            notify.assert_not_called()
-            self.assertFalse((Path(directory) / "reports").exists())
+            self.assertTrue(daily_push.run_once(config, force=True))
+            post.assert_called_once()
+            notify.assert_called_once()
+            self.assertTrue(any((Path(directory) / "reports").glob("*.md")))
 
 
 if __name__ == "__main__":

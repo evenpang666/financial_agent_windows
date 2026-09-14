@@ -113,9 +113,6 @@ def run_once(config: dict, force: bool = False) -> bool:
     base_url = str(config["data_service_url"]).rstrip("/")
     query = urlencode({"candidate_limit": int(config.get("candidate_limit", 5))})
     report = get_json(f"{base_url}/v1/daily-report?{query}")
-    if report.get("empty_reason") == "no_holdings":
-        log("未保存持仓，不生成、不归档且不推送日报。")
-        return False
     if not report.get("is_trading_day"):
         log("今日不是交易日，不生成或推送开盘前简报。")
         return False

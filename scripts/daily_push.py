@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Trading-day 09:00 report scheduler with local archive and optional webhook push."""
+"""Trading-day 09:20 report scheduler with local archive and optional webhook push."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def load_config(path: Path) -> dict:
     defaults = {
         "enabled": True,
         "data_service_url": "http://127.0.0.1:8765",
-        "scheduled_time": "08:55",
+        "scheduled_time": "09:20",
         "candidate_limit": 5,
         "report_site_url": "http://127.0.0.1:8766",
         "webhook_type": "generic",
@@ -156,7 +156,7 @@ def run_daemon(config_path: Path):
     while True:
         try:
             config = load_config(config_path)
-            delay = seconds_until_schedule(str(config.get("scheduled_time", "08:55")))
+            delay = seconds_until_schedule(str(config.get("scheduled_time", "09:20")))
             log(f"下一次检查将在约 {delay / 3600:.1f} 小时后执行。")
             time.sleep(delay)
             # Reload so webhook and candidate count changes do not require a restart.

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import URLError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,11 @@ spec.loader.exec_module(daily_push)
 
 
 class DailyPushTests(unittest.TestCase):
+    def test_default_schedule_is_0920(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = daily_push.load_config(Path(directory) / "missing.json")
+        self.assertEqual(config["scheduled_time"], "09:20")
+
     def test_supported_webhook_payloads(self):
         self.assertEqual(daily_push.webhook_payload("feishu", "x")["msg_type"], "text")
         self.assertEqual(daily_push.webhook_payload("wecom", "x")["msgtype"], "markdown")
@@ -49,6 +55,17 @@ class DailyPushTests(unittest.TestCase):
             self.assertTrue(daily_push.run_once(config, force=True))
             post.assert_called_once()
             notify.assert_called_once()
+            self.assertTrue(any((Path(directory) / "reports").glob("*.md")))
+
+    def test_report_is_archived_when_realtime_site_notification_fails(self):
+        config = {"enabled": True, "data_service_url": "http://test", "candidate_limit": 5, "webhook_url": ""}
+        report = {"is_trading_day": True, "markdown": "# 市场全景"}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(daily_push, "STATE_FILE", Path(directory) / "state.json"), \
+             patch.object(daily_push, "REPORT_DIR", Path(directory) / "reports"), \
+             patch.object(daily_push, "get_json", return_value=report), \
+             patch.object(daily_push, "notify_report_site", side_effect=URLError("site offline")):
+            self.assertTrue(daily_push.run_once(config, force=True))
             self.assertTrue(any((Path(directory) / "reports").glob("*.md")))
 
 

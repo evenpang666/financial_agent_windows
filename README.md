@@ -38,7 +38,7 @@ python --version
 - 创建 `.venv` 并安装 Python 依赖；
 - 以本地目录注册 `dsh-finance-agent`；
 - 在独立窗口启动本地数据服务，并启动 `dsh web`。
-- 注册每日 08:55 日报任务和登录时启动的本地日报网页，目标在 09:00（开盘前30分钟）前送达。
+- 注册每日 09:20 日报任务和登录时启动的本地日报网页，目标在 09:30（开盘前10分钟）前送达。
 
 已完成安装时，双击启动器会跳过安装步骤，直接启动本地数据服务和 `dsh web`。
 
@@ -146,7 +146,7 @@ AKShare 适合原型和个人研究；任何公开发布、收费服务或高频
 智能体会调用 `set_portfolio`，将持仓保存到仅供本机使用的 `data/portfolio.json`。以后可以在 DSH Web 中发送“查看我的持仓”核对，或发送新的完整列表覆盖旧记录。
 
 3. 如果持仓列表不存在或为空，系统仍会生成、归档并推送市场全景和推荐股，只省略“已持仓股票”及其建议；保存至少一只持仓后，日报会自动增加持仓分析。
-4. 每个交易日 08:55 开始汇总，目标在 09:00 前完成。非交易日不生成日报。
+4. 每个交易日 09:20 开始汇总，目标在 09:30 前完成。非交易日不生成日报。
 5. 日报生成后会保存到 `data/reports/YYYY-MM-DD.md`，随后通过本地实时通知推送到网页；如果实时连接暂时中断，网页也会在 30 秒内自动刷新读取，无需手动上传。
 
 ### 7.2 在网页查看日报
@@ -165,7 +165,7 @@ AKShare 适合原型和个人研究；任何公开发布、收费服务或高频
 
 ### 7.3 调度与 Webhook
 
-首次运行 `install-and-start.ps1` 会将 `config/daily-push.example.json` 复制为不纳入 Git 的 `config/daily-push.json`，并注册 Windows 计划任务 `DSH A-Share Pre-open Research`。任务每天北京时间 08:55 开始并行汇总，目标于 09:00 前送达；数据服务会再次核验交易日，因此周末和休市日不会推送。若系统不允许注册任务，启动器会自动退回为当前登录会话内的后台调度器。
+首次运行 `install-and-start.ps1` 会将 `config/daily-push.example.json` 复制为不纳入 Git 的 `config/daily-push.json`，并注册 Windows 计划任务 `DSH A-Share Pre-open Research`。任务每天北京时间 09:20 开始并行汇总，目标于 09:30 前送达；数据服务会再次核验交易日，因此周末和休市日不会推送。若系统不允许注册任务，启动器会自动退回为当前登录会话内的后台调度器。
 
 启动器还会注册 `DSH A-Share Report Site` 登录任务，使日报网页在用户登录 Windows 后自动运行。
 
@@ -174,7 +174,7 @@ AKShare 适合原型和个人研究；任何公开发布、收费服务或高频
 ```json
 {
   "enabled": true,
-  "scheduled_time": "08:55",
+  "scheduled_time": "09:20",
   "candidate_limit": 5,
   "webhook_type": "feishu",
   "webhook_url": "https://your.invalid/your-webhook"

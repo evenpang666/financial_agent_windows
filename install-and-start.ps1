@@ -169,7 +169,21 @@ $reportSiteRunning = Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAc
 if (-not $reportSiteRunning) {
     Write-Host 'Starting the local-network report website...'
     Start-Process -FilePath $venvPython -ArgumentList @($reportWebScript) -WindowStyle Hidden
-    Start-Sleep -Seconds 1
+    $reportReady = $false
+    foreach ($attempt in 1..15) {
+        try {
+            $reportHealth = Invoke-RestMethod 'http://127.0.0.1:8766/api/health' -TimeoutSec 2
+            if ($reportHealth.status -eq 'ok') {
+                $reportReady = $true
+                break
+            }
+        } catch {
+            Start-Sleep -Seconds 1
+        }
+    }
+    if (-not $reportReady) {
+        throw 'Report website did not become ready within 15 seconds.'
+    }
 }
 
 Write-Host 'Report website (this computer): http://127.0.0.1:8766'

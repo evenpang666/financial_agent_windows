@@ -11,13 +11,13 @@ $webTaskName = 'DSH A-Share Report Site'
 $powerShellExe = Join-Path $PSHOME 'powershell.exe'
 $arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$runner`""
 $action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $arguments -WorkingDirectory $projectRoot
-$trigger = New-ScheduledTaskTrigger -Daily -At '08:55'
+$trigger = New-ScheduledTaskTrigger -Daily -At '09:20'
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
 $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Generate and push the A-share research brief before the 09:30 market open.' -Force | Out-Null
-Write-Host "Installed Windows scheduled task: $taskName (daily 08:55; non-trading days are skipped)."
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Generate and push the A-share research brief at 09:20, before the 09:30 market open.' -Force | Out-Null
+Write-Host "Installed Windows scheduled task: $taskName (daily 09:20; non-trading days are skipped)."
 
 $webAction = New-ScheduledTaskAction -Execute $pythonExe -Argument "`"$webServer`"" -WorkingDirectory $projectRoot
 $webTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userId

@@ -959,7 +959,7 @@ def daily_report_response(candidate_limit: int = 5):
         report_warnings.append(f"候选排行不可用：{exc}")
         candidates = {"ranking": [], "method": "当日候选数据不可用。"}
     lines = [
-        "# A股开盘前研究简报", "", f"数据日期：{date.today()}（08:55开始汇总，目标于09:00开盘前30分钟送达）", "",
+        "# A股开盘前研究简报", "", f"数据日期：{date.today()}（09:20开始汇总，目标于09:30开盘前10分钟送达）", "",
         "## 市场全景", "",
         f"- 市场状态：{panorama.get('market_state', {}).get('summary', '数据不足')}",
         f"- 风险等级：{panorama.get('market_state', {}).get('risk_level', '未知')}；参考仓位：{panorama.get('market_state', {}).get('reference_position', '待评估')}",

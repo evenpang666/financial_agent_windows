@@ -28,6 +28,87 @@ HOST, PORT = "127.0.0.1", 8765
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PORTFOLIO_FILE = PROJECT_ROOT / "data" / "portfolio.json"
 EVENT_ARCHIVE_FILE = PROJECT_ROOT / "data" / "market-events.json"
+REPORT_SNAPSHOT_DIR = PROJECT_ROOT / "data" / "report-snapshots"
+REFLECTION_FILE = PROJECT_ROOT / "data" / "research-reflections.json"
+REPORT_SESSIONS = {"morning", "afternoon"}
+
+
+def normalize_report_session(value: str = "morning") -> str:
+    session = str(value or "morning").strip().lower()
+    aliases = {"am": "morning", "preopen": "morning", "日报1": "morning", "pm": "afternoon", "preclose": "afternoon", "日报2": "afternoon"}
+    session = aliases.get(session, session)
+    if session not in REPORT_SESSIONS:
+        raise ValueError("session 必须是 morning（日报1）或 afternoon（日报2）。")
+    return session
+
+
+def snapshot_path(day: str, market: str, session: str) -> Path:
+    safe_day = pd.Timestamp(day).strftime("%Y-%m-%d")
+    return REPORT_SNAPSHOT_DIR / f"{safe_day}-{normalize_market(market)}-{normalize_report_session(session)}.json"
+
+
+def load_json_object(path: Path, default=None):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else ({} if default is None else default)
+    except (OSError, json.JSONDecodeError):
+        return {} if default is None else default
+
+
+def save_report_snapshot(payload: dict):
+    target = snapshot_path(payload.get("as_of", str(date.today())), payload.get("market", "a"), payload.get("session", "morning"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return target
+
+
+def load_reflections(market: str = "a", symbol: str = "", limit: int = 20) -> list[dict]:
+    market = normalize_market(market)
+    payload = load_json_object(REFLECTION_FILE, {"reflections": []})
+    records = payload.get("reflections", []) if isinstance(payload.get("reflections"), list) else []
+    filtered = [item for item in records if isinstance(item, dict) and item.get("market", "a") == market]
+    if symbol:
+        normalized = normalize_symbol(symbol, market)
+        filtered = [item for item in filtered if item.get("symbol") == normalized]
+    return sorted(filtered, key=lambda item: (str(item.get("date", "")), str(item.get("created_at", ""))), reverse=True)[:limit]
+
+
+def reflections_response(market: str = "a", symbol: str = "", limit: int = 50) -> dict:
+    market = normalize_market(market)
+    records = load_reflections(market, symbol, min(max(int(limit), 1), 200))
+    return {
+        "market": market, "symbol": normalize_symbol(symbol, market) if symbol else None,
+        "as_of": str(date.today()), "reflections": records, "count": len(records),
+        "source": "local research reflection archive",
+        "note": "反思来自日报1与日报2的可审计快照对照，不代表因果证明或未来收益预测。",
+    }
+
+
+def reflection_adjustment(symbol: str, market: str = "a") -> dict:
+    """Bounded feedback adjustment based only on archived, auditable intraday reviews."""
+    records = load_reflections(market, symbol, 20)
+    contradicted = sum(item.get("alignment") == "contradicted" for item in records)
+    aligned = sum(item.get("alignment") == "aligned" for item in records)
+    # Repeated misses reduce directional confidence; confirmations recover it slowly.
+    score = max(-10, min(5, aligned - contradicted * 3))
+    return {
+        "adjustment": score, "sample_size": len(records), "aligned": aligned,
+        "contradicted": contradicted, "recent": records[:5],
+        "method": "近20条盘中复盘：相符+1、明显背离-3，调整限制在-10至+5个百分点。",
+    }
+
+
+def persist_reflections(records: list[dict]):
+    existing = load_json_object(REFLECTION_FILE, {"reflections": []}).get("reflections", [])
+    keyed = {}
+    for item in list(existing) + list(records):
+        if not isinstance(item, dict):
+            continue
+        key = (item.get("date"), item.get("market", "a"), item.get("symbol"), item.get("morning_conclusion"))
+        keyed[key] = item
+    retained = sorted(keyed.values(), key=lambda item: (str(item.get("date", "")), str(item.get("created_at", ""))), reverse=True)[:2000]
+    REFLECTION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REFLECTION_FILE.write_text(json.dumps({"reflections": retained}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def safe_float(value):
@@ -70,6 +151,22 @@ def clean_record(record):
     return {str(key): to_number(value) for key, value in record.items()}
 
 
+MARKETS = {"a", "hk"}
+
+
+def normalize_market(value: str = "a") -> str:
+    """Normalize the public market selector without guessing from a numeric code."""
+    text = str(value or "a").strip().lower().replace("-", "_")
+    aliases = {
+        "a": "a", "ashare": "a", "a_share": "a", "cn": "a", "中国a股": "a", "a股": "a",
+        "hk": "hk", "hongkong": "hk", "hong_kong": "hk", "港股": "hk",
+    }
+    market = aliases.get(text)
+    if market not in MARKETS:
+        raise ValueError("market 必须是 a（A股）或 hk（港股）。")
+    return market
+
+
 def normalize_a_symbol(value):
     text = str(value or "").strip()
     if text.endswith(".0") and text[:-2].isdigit():
@@ -78,13 +175,44 @@ def normalize_a_symbol(value):
     return digits[-6:].zfill(6) if digits else ""
 
 
+def normalize_hk_symbol(value):
+    """Hong Kong tickers are stored as a five-digit code, e.g. 700 -> 00700."""
+    text = str(value or "").strip().upper()
+    for prefix in ("HKG:", "HKG", "HK:", "HK"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    if text.endswith(".HK"):
+        text = text[:-3]
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    if not text.isdigit() or not 1 <= len(text) <= 5:
+        return ""
+    return text.zfill(5)
+
+
+def normalize_symbol(value, market: str = "a") -> str:
+    market = normalize_market(market)
+    symbol = normalize_a_symbol(value) if market == "a" else normalize_hk_symbol(value)
+    if not symbol:
+        rule = "6 位 A 股代码，例如 600519" if market == "a" else "1–5 位港股代码，例如 00700"
+        raise ValueError(f"symbol 必须是{rule}。")
+    return symbol
+
+
+def market_label(market: str) -> str:
+    return "A股" if normalize_market(market) == "a" else "港股"
+
+
 def normalize_holding(item: dict) -> dict:
     if not isinstance(item, dict):
         raise ValueError("每条持仓必须是对象。")
-    symbol = str(item.get("symbol", "")).strip()
-    if not symbol.isdigit() or len(symbol) != 6:
-        raise ValueError("持仓代码必须是 6 位 A 股代码。")
+    market = normalize_market(item.get("market", "a"))
+    symbol = normalize_symbol(item.get("symbol", ""), market)
+    # Keep old A-share portfolio files byte-for-byte compatible in their shape.
     holding = {"symbol": symbol}
+    if market != "a" or "market" in item:
+        holding["market"] = market
     name = str(item.get("name", "")).strip()
     if name:
         holding["name"] = name[:80]
@@ -121,7 +249,7 @@ def save_portfolio(payload: dict):
     if len(payload["holdings"]) > 100:
         raise ValueError("持仓数量不能超过 100。")
     holdings = [normalize_holding(item) for item in payload["holdings"]]
-    symbols = [item["symbol"] for item in holdings]
+    symbols = [(item.get("market", "a"), item["symbol"]) for item in holdings]
     if len(symbols) != len(set(symbols)):
         raise ValueError("持仓代码不能重复。")
     PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -129,46 +257,70 @@ def save_portfolio(payload: dict):
     return {"source": "local portfolio file", "as_of": str(date.today()), "holdings": holdings, "saved": True}
 
 
-def stock_search_response(query: str, limit: int):
+def stock_search_response(query: str, limit: int, market: str = "a"):
     query = str(query or "").strip()
     if not query:
         raise ValueError("query 不能为空。")
-    frame = ak.stock_info_a_code_name().copy()
+    market = normalize_market(market)
+    if market == "a":
+        frame = ak.stock_info_a_code_name().copy()
+        source = "AKShare stock_info_a_code_name"
+    else:
+        frame = ak.stock_hk_spot_em().copy()
+        source = "AKShare stock_hk_spot_em"
     code_key = next((key for key in ["code", "代码", "证券代码"] if key in frame.columns), None)
     name_key = next((key for key in ["name", "名称", "证券简称"] if key in frame.columns), None)
     if not code_key or not name_key:
         raise ValueError("上游股票列表字段发生变化。")
-    frame[code_key] = frame[code_key].astype(str).str.zfill(6)
-    exact = frame[code_key].eq(query) | frame[name_key].astype(str).eq(query)
+    normalizer = normalize_a_symbol if market == "a" else normalize_hk_symbol
+    frame[code_key] = frame[code_key].map(normalizer)
+    frame = frame.loc[frame[code_key].ne("")]
+    query_symbol = normalizer(query)
+    exact = frame[code_key].eq(query_symbol) | frame[name_key].astype(str).eq(query)
     partial = frame[code_key].str.contains(query, case=False, na=False, regex=False) | frame[name_key].astype(str).str.contains(query, case=False, na=False, regex=False)
     result = pd.concat([frame.loc[exact], frame.loc[partial & ~exact]]).head(limit)
     matches = [{"symbol": str(item[code_key]), "name": str(item[name_key])} for item in result.to_dict("records")]
-    return {"query": query, "source": "AKShare stock_info_a_code_name", "as_of": str(date.today()), "matches": matches}
+    return {"query": query, "market": market, "source": source, "as_of": str(date.today()), "matches": matches}
 
 
-def trading_day_response(day_text: str = ""):
+def trading_day_response(day_text: str = "", market: str = "a"):
+    market = normalize_market(market)
     target = pd.Timestamp(day_text).date() if day_text else date.today()
-    frame = ak.tool_trade_date_hist_sina()
-    key = next((key for key in ["trade_date", "日期"] if key in frame.columns), None)
+    if market == "a":
+        frame = ak.tool_trade_date_hist_sina()
+        key = next((key for key in ["trade_date", "日期"] if key in frame.columns), None)
+        source = "AKShare tool_trade_date_hist_sina"
+    else:
+        # A broad HK index avoids treating a suspended individual security as a market holiday.
+        frame = ak.stock_hk_index_daily_sina(symbol="HSI")
+        key = next((key for key in ["date", "日期", "Date"] if key in frame.columns), None)
+        source = "AKShare stock_hk_index_daily_sina (HSI)"
     if not key:
         raise ValueError("上游交易日历字段发生变化。")
     dates = {pd.Timestamp(value).date() for value in frame[key].dropna()}
     return {
-        "date": str(target), "is_trading_day": target in dates,
-        "source": "AKShare tool_trade_date_hist_sina", "as_of": str(max(dates)) if dates else None,
+        "date": str(target), "market": market, "is_trading_day": target in dates,
+        "source": source, "as_of": str(max(dates)) if dates else None,
     }
 
 
-def market_brief_response(event_limit: int):
+def market_brief_response(event_limit: int, market: str = "a"):
+    market = normalize_market(market)
     sources, errors = [], []
     indices, events = [], []
     try:
-        frame = ak.stock_zh_index_spot_sina()
-        wanted = {"sh000001", "sh000300", "sz399001", "sz399006"}
-        subset = frame.loc[frame["代码"].astype(str).isin(wanted)]
-        index_fields = [field for field in ["代码", "名称", "最新价", "涨跌额", "涨跌幅", "成交量", "成交额"] if field in subset]
+        if market == "a":
+            frame = ak.stock_zh_index_spot_sina()
+            wanted = {"sh000001", "sh000300", "sz399001", "sz399006"}
+            subset = frame.loc[frame["代码"].astype(str).isin(wanted)]
+            index_fields = [field for field in ["代码", "名称", "最新价", "涨跌额", "涨跌幅", "成交量", "成交额"] if field in subset]
+            sources.append("AKShare stock_zh_index_spot_sina")
+        else:
+            frame = ak.stock_hk_index_spot_sina()
+            subset = frame.head(10)
+            index_fields = [field for field in ["code", "代码", "name", "名称", "price", "最新价", "change", "涨跌额", "change_pct", "涨跌幅"] if field in subset]
+            sources.append("AKShare stock_hk_index_spot_sina")
         indices = [clean_record(item) for item in subset[index_fields].to_dict("records")]
-        sources.append("AKShare stock_zh_index_spot_sina")
     except Exception as exc:
         errors.append(f"指数快照不可用：{exc}")
     try:
@@ -182,7 +334,7 @@ def market_brief_response(event_limit: int):
     if not indices and not events:
         raise RuntimeError("；".join(errors) or "市场数据源未返回结果。")
     return {
-        "source": "; ".join(sources), "as_of": str(date.today()), "indices": indices, "events": events,
+        "market": market, "source": "; ".join(sources), "as_of": str(date.today()), "indices": indices, "events": events,
         "unavailable": errors, "note": "快讯是待核验的事件线索，不等同于价格影响或投资结论。",
     }
 
@@ -296,9 +448,13 @@ def event_tone(title: str):
     return "positive" if score > 0 else ("negative" if score < 0 else "neutral")
 
 
-def market_breadth_response(frame=None):
-    """Calculate auditable cross-sectional A-share breadth from the spot universe."""
-    frame = ak.stock_zh_a_spot_tx().copy() if frame is None else frame.copy()
+def market_breadth_response(frame=None, market: str = "a"):
+    """Calculate auditable cross-sectional breadth for the selected market."""
+    market = normalize_market(market)
+    if frame is None:
+        frame = (ak.stock_zh_a_spot_tx() if market == "a" else ak.stock_hk_spot_em()).copy()
+    else:
+        frame = frame.copy()
     aliases = {
         "day": ["zdf", "涨跌幅"], "day5": ["zdf_d5", "5日涨跌幅"],
         "day20": ["zdf_d20", "20日涨跌幅"],
@@ -328,7 +484,8 @@ def market_breadth_response(frame=None):
     score = int(round(max(0, min(100, score))))
     label = "强势扩散" if score >= 70 else ("偏强" if score >= 57 else ("均衡" if score >= 43 else ("偏弱" if score >= 30 else "弱势扩散")))
     return {
-        "source": "AKShare stock_zh_a_spot_tx cross-section", "as_of": str(date.today()),
+        "market": market,
+        "source": ("AKShare stock_zh_a_spot_tx" if market == "a" else "AKShare stock_hk_spot_em") + " cross-section", "as_of": str(date.today()),
         "valid_stocks": valid, "advancing": advancing, "declining": declining, "unchanged": unchanged,
         "advance_ratio": round(advance_ratio, 4), "advance_decline_ratio": round(ad_ratio, 4),
         "median_pct_change": round(median_change, 3),
@@ -339,23 +496,28 @@ def market_breadth_response(frame=None):
     }
 
 
-def social_sentiment_response(breadth=None):
-    """Build a conservative social/attention proxy and disclose proxy limitations."""
-    breadth = breadth or market_breadth_response()
+def social_sentiment_response(breadth=None, market: str = "a"):
+    """Build a conservative attention proxy and disclose its market-specific limits."""
+    market = normalize_market(market)
+    breadth = breadth or market_breadth_response(market=market)
     hot_stocks, unavailable = [], []
-    try:
-        frame = ak.stock_hot_rank_em().copy()
-        for item in frame.head(10).to_dict("records"):
-            hot_stocks.append(clean_record({key: value for key, value in item.items() if key in ("代码", "股票代码", "名称", "股票名称", "最新价", "涨跌幅", "当前排名", "排名")}))
-    except Exception as exc:
-        unavailable.append(f"东方财富人气榜不可用：{exc}")
+    if market == "a":
+        try:
+            frame = ak.stock_hot_rank_em().copy()
+            for item in frame.head(10).to_dict("records"):
+                hot_stocks.append(clean_record({key: value for key, value in item.items() if key in ("代码", "股票代码", "名称", "股票名称", "最新价", "涨跌幅", "当前排名", "排名")}))
+        except Exception as exc:
+            unavailable.append(f"东方财富人气榜不可用：{exc}")
+    else:
+        unavailable.append("港股关注榜尚未接入；情绪分仅使用港股价格宽度代理。")
     score = int(round(max(0, min(100,
         breadth.get("score", 50) * 0.7 +
         (65 if breadth.get("limit_up_count", 0) > breadth.get("limit_down_count", 0) else 35) * 0.3
     ))))
     label = "亢奋" if score >= 75 else ("偏乐观" if score >= 58 else ("中性" if score >= 42 else ("偏谨慎" if score >= 25 else "恐慌")))
     return {
-        "source": "东方财富人气榜 via AKShare + 全市场价格情绪代理" if hot_stocks else "全市场价格情绪代理",
+        "market": market,
+        "source": "东方财富人气榜 via AKShare + 全市场价格情绪代理" if hot_stocks else f"{market_label(market)}价格情绪代理",
         "as_of": str(date.today()), "score": score, "label": label, "hot_stocks": hot_stocks,
         "unavailable": unavailable,
         "note": "当前分数主要反映市场参与和涨跌分布，不等同于对社交媒体文本做情感识别；人气榜仅表示关注度。",
@@ -377,16 +539,17 @@ def calibrate_buy_sell(base_buy_percentage: int, panorama: dict | None):
     }
 
 
-def market_panorama_response():
+def market_panorama_response(market: str = "a"):
     """Combine events, policy, breadth and sentiment into one market risk regime."""
+    market = normalize_market(market)
     unavailable = []
     try:
-        breadth = market_breadth_response()
+        breadth = market_breadth_response(market=market)
     except Exception as exc:
         breadth = {"score": 50, "label": "数据不足"}
         unavailable.append(f"大盘宽度不可用：{exc}")
     try:
-        sentiment = social_sentiment_response(breadth)
+        sentiment = social_sentiment_response(breadth, market=market)
         unavailable.extend(sentiment.get("unavailable", []))
     except Exception as exc:
         sentiment = {"score": 50, "label": "数据不足", "hot_stocks": []}
@@ -429,7 +592,8 @@ def market_panorama_response():
         risk_level, position_range, adjustment = "低", "60%–80%", 12
     regime = "risk_off" if risk_score >= 60 else ("risk_on" if risk_score < 40 else "neutral")
     return {
-        "source": "AKShare market news, A-share cross-section and attention ranking", "as_of": str(date.today()),
+        "market": market,
+        "source": f"AKShare market news, {market_label(market)} cross-section and attention proxy", "as_of": str(date.today()),
         "event_window": event_window,
         "international_events": international[:12], "domestic_policies": domestic[:12], "other_events": other[:12],
         "social_sentiment": sentiment, "market_breadth": breadth,
@@ -560,30 +724,32 @@ def related_enterprises_response(symbol: str, days: int = 30, limit: int = 3):
     }
 
 
-def market_movers_response(limit: int):
-    frame = ak.stock_zh_a_spot_tx()
-    fields = [field for field in ["code", "name", "zxj", "zd", "zdf", "zdf_d5", "zdf_d20", "volume", "hsl", "pe_ttm", "zsz"] if field in frame]
-    if "zdf" not in fields:
+def market_movers_response(limit: int, market: str = "a"):
+    market = normalize_market(market)
+    frame = (ak.stock_zh_a_spot_tx() if market == "a" else ak.stock_hk_spot_em()).copy()
+    change_key = next((key for key in ["zdf", "涨跌幅"] if key in frame.columns), None)
+    if not change_key:
         raise ValueError("上游数据未提供涨跌幅字段。")
-    frame = frame.copy()
-    frame["zdf"] = pd.to_numeric(frame["zdf"], errors="coerce")
-    frame = frame.dropna(subset=["zdf"])
-    up = [clean_record(item) for item in frame.nlargest(limit, "zdf")[fields].to_dict("records")]
-    down = [clean_record(item) for item in frame.nsmallest(limit, "zdf")[fields].to_dict("records")]
+    fields = [field for field in ["code", "代码", "name", "名称", "zxj", "最新价", "zd", "涨跌额", change_key, "zdf_d5", "5日涨跌幅", "zdf_d20", "20日涨跌幅", "volume", "成交量", "hsl", "换手率", "pe_ttm", "市盈率", "zsz", "总市值"] if field in frame]
+    frame[change_key] = pd.to_numeric(frame[change_key], errors="coerce")
+    frame = frame.dropna(subset=[change_key])
+    up = [clean_record(item) for item in frame.nlargest(limit, change_key)[fields].to_dict("records")]
+    down = [clean_record(item) for item in frame.nsmallest(limit, change_key)[fields].to_dict("records")]
     return {
-        "source": "AKShare stock_zh_a_spot_tx", "as_of": str(date.today()),
+        "market": market, "source": "AKShare stock_zh_a_spot_tx" if market == "a" else "AKShare stock_hk_spot_em", "as_of": str(date.today()),
         "top_gainers": up, "top_losers": down,
         "note": "异动列表仅用于生成待研究候选池；涨跌幅和成交信息本身不构成推荐或预测。",
     }
 
 
-def candidate_ranking_response(limit: int, panorama=None):
-    frame = ak.stock_zh_a_spot_tx().copy()
+def candidate_ranking_response(limit: int, panorama=None, market: str = "a"):
+    market = normalize_market(market)
+    frame = (ak.stock_zh_a_spot_tx() if market == "a" else ak.stock_hk_spot_em()).copy()
     aliases = {
-        "symbol": ["code", "代码"], "name": ["name", "名称"], "price": ["zxj", "最新价"],
+        "symbol": ["code", "代码", "股票代码", "证券代码"], "name": ["name", "名称", "股票名称", "证券简称"], "price": ["zxj", "最新价", "现价"],
         "day": ["zdf", "涨跌幅"], "day5": ["zdf_d5", "5日涨跌幅"],
         "day20": ["zdf_d20", "20日涨跌幅"], "turnover": ["hsl", "换手率"],
-        "pe": ["pe_ttm", "市盈率-动态"], "market_cap": ["zsz", "总市值"],
+        "pe": ["pe_ttm", "市盈率-动态", "市盈率"], "market_cap": ["zsz", "总市值", "总市值(港元)"],
     }
     columns = {name: next((key for key in keys if key in frame.columns), None) for name, keys in aliases.items()}
     if not columns["symbol"] or not columns["name"] or not columns["day"]:
@@ -591,15 +757,14 @@ def candidate_ranking_response(limit: int, panorama=None):
     rows = []
     for item in frame.to_dict("records"):
         raw_symbol = str(item.get(columns["symbol"], ""))
-        digits = "".join(character for character in raw_symbol if character.isdigit())
-        symbol = digits[-6:] if len(digits) >= 6 else digits.zfill(6)
+        symbol = (normalize_a_symbol(raw_symbol) if market == "a" else normalize_hk_symbol(raw_symbol))
         name = str(item.get(columns["name"], ""))
         day = safe_float(item.get(columns["day"])) if columns["day"] else None
         day5 = safe_float(item.get(columns["day5"])) if columns["day5"] else None
         day20 = safe_float(item.get(columns["day20"])) if columns["day20"] else None
         turnover = safe_float(item.get(columns["turnover"])) if columns["turnover"] else None
         pe = safe_float(item.get(columns["pe"])) if columns["pe"] else None
-        if len(symbol) != 6 or day is None or "ST" in name.upper() or day >= 9.8:
+        if not symbol or day is None or "ST" in name.upper() or (market == "a" and day >= 9.8):
             continue
         # Transparent research score: balanced momentum, tradability and non-extreme valuation.
         momentum = max(-10, min(10, day)) * 1.2
@@ -621,7 +786,7 @@ def candidate_ranking_response(limit: int, panorama=None):
     ranked = sorted(rows, key=lambda item: item["score"], reverse=True)[:limit]
     if panorama is None:
         try:
-            panorama = market_panorama_response()
+            panorama = market_panorama_response(market=market)
         except Exception as exc:
             panorama = {
                 "as_of": None, "unavailable": [f"市场全景不可用：{exc}"],
@@ -629,34 +794,46 @@ def candidate_ranking_response(limit: int, panorama=None):
             }
     for rank, item in enumerate(ranked, 1):
         item["rank"] = rank
-        calibrated = calibrate_buy_sell(int(round(max(5, min(95, item["score"])))), panorama)
+        feedback = reflection_adjustment(item["symbol"], market)
+        reflection_base = int(round(max(5, min(95, item["score"] + feedback["adjustment"]))))
+        calibrated = calibrate_buy_sell(reflection_base, panorama)
         item.update(calibrated)
+        item["raw_score"] = item["score"]
+        item["reflection_adjustment"] = feedback["adjustment"]
+        item["reflection_context"] = feedback
         item["recommendation"] = "建议买入" if item["buy_percentage"] >= 65 else ("建议卖出" if item["sell_percentage"] >= 65 else "建议持有观察")
     return {
-        "source": "AKShare stock_zh_a_spot_tx + transparent local scoring", "as_of": str(date.today()),
+        "market": market,
+        "source": ("AKShare stock_zh_a_spot_tx" if market == "a" else "AKShare stock_hk_spot_em") + " + transparent local scoring", "as_of": str(date.today()),
         "ranking": ranked, "market_state": (panorama or {}).get("market_state"),
         "market_context": market_context_summary(panorama),
         "unavailable": list((panorama or {}).get("unavailable", [])),
-        "method": "基础分=clamp(50+1日涨幅×1.2+5日涨幅×0.8+20日涨幅×0.35+流动性分+估值分,0,100)；再按市场风险档调整-20至+12个百分点；卖出倾向=100-买入倾向；剔除ST和接近涨停标的。",
+        "method": "原始分=clamp(50+1日涨幅×1.2+5日涨幅×0.8+20日涨幅×0.35+流动性分+估值分,0,100)；叠加历史盘中反思校准（-10至+5），再按市场风险档调整-20至+12个百分点；卖出倾向=100-买入倾向；剔除ST，A股另剔除接近涨停标的。",
         "note": "排名按买入倾向降序；百分比不是建议仓位或收益预测。",
     }
 
 
-def history(symbol: str, start: str = "", end: str = "", adjust: str = "qfq") -> pd.DataFrame:
+def history(symbol: str, start: str = "", end: str = "", adjust: str = "qfq", market: str = "a") -> pd.DataFrame:
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
     today = date.today()
     start_date = (pd.Timestamp(start).date() if start else today - timedelta(days=730)).strftime("%Y%m%d")
     end_date = (pd.Timestamp(end).date() if end else today).strftime("%Y%m%d")
-    source = "AKShare stock_zh_a_hist"
-    try:
-        frame = ak.stock_zh_a_hist(
-            symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust=adjust or "", timeout=15,
-        )
-    except Exception as primary_error:
-        if symbol.startswith(("4", "8")):
-            raise primary_error
-        exchange_symbol = ("sh" if symbol.startswith(("5", "6", "9")) else "sz") + symbol
-        frame = ak.stock_zh_a_daily(symbol=exchange_symbol, start_date=start_date, end_date=end_date, adjust=adjust or "")
-        source = "AKShare stock_zh_a_daily (Sina fallback)"
+    if market == "hk":
+        frame = ak.stock_hk_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust=adjust or "")
+        source = "AKShare stock_hk_hist"
+    else:
+        source = "AKShare stock_zh_a_hist"
+        try:
+            frame = ak.stock_zh_a_hist(
+                symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust=adjust or "", timeout=15,
+            )
+        except Exception as primary_error:
+            if symbol.startswith(("4", "8")):
+                raise primary_error
+            exchange_symbol = ("sh" if symbol.startswith(("5", "6", "9")) else "sz") + symbol
+            frame = ak.stock_zh_a_daily(symbol=exchange_symbol, start_date=start_date, end_date=end_date, adjust=adjust or "")
+            source = "AKShare stock_zh_a_daily (Sina fallback)"
     if frame.empty:
         raise ValueError("未返回历史行情；请确认代码、日期区间和数据源状态。")
     rename = {
@@ -674,21 +851,25 @@ def history(symbol: str, start: str = "", end: str = "", adjust: str = "qfq") ->
     return frame
 
 
-def bars_response(symbol: str, start: str, end: str, adjust: str):
-    frame = history(symbol, start, end, adjust)
+def bars_response(symbol: str, start: str, end: str, adjust: str, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    frame = history(symbol, start, end, adjust, market)
     fields = [field for field in ["date", "open", "high", "low", "close", "volume", "amount", "turnover"] if field in frame]
     bars = []
     for row in frame[fields].to_dict("records"):
         row["date"] = iso_date(row["date"])
         bars.append(clean_record(row))
     return {
-        "symbol": symbol, "source": frame.attrs.get("source", "AKShare A-share history"), "as_of": bars[-1]["date"],
+        "symbol": symbol, "market": market, "source": frame.attrs.get("source", "AKShare history"), "as_of": bars[-1]["date"],
         "adjust": adjust or "none", "bars": bars,
     }
 
 
-def indicators_response(symbol: str, lookback: int, adjust: str):
-    frame = history(symbol, "", "", adjust).tail(lookback).copy()
+def indicators_response(symbol: str, lookback: int, adjust: str, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    frame = history(symbol, "", "", adjust, market).tail(lookback).copy()
     close = frame["close"]
     frame["ma5"] = close.rolling(5).mean()
     frame["ma20"] = close.rolling(20).mean()
@@ -706,7 +887,7 @@ def indicators_response(symbol: str, lookback: int, adjust: str):
     last = frame.iloc[-1]
     latest = {key: to_number(last[key]) for key in ["close", "ma5", "ma20", "ma60", "rsi14", "macd", "macd_signal", "macd_histogram"]}
     return {
-        "symbol": symbol, "source": frame.attrs.get("source", "AKShare A-share history") + " + local calculation", "as_of": iso_date(last["date"]),
+        "symbol": symbol, "market": market, "source": frame.attrs.get("source", "AKShare history") + " + local calculation", "as_of": iso_date(last["date"]),
         "adjust": adjust or "none", "lookback_trading_days": len(frame), "latest": latest,
         "annualized_volatility": to_number(returns.std() * math.sqrt(252)),
         "max_drawdown": to_number(drawdown.min()),
@@ -714,7 +895,32 @@ def indicators_response(symbol: str, lookback: int, adjust: str):
     }
 
 
-def spot_row(symbol: str) -> dict:
+def spot_row(symbol: str, market: str = "a") -> dict:
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    if market == "hk":
+        frame = ak.stock_hk_spot_em().copy()
+        code_key = next((key for key in ["代码", "股票代码", "证券代码", "code"] if key in frame.columns), None)
+        if not code_key:
+            raise ValueError("港股行情缺少代码字段。")
+        row = frame.loc[frame[code_key].map(normalize_hk_symbol) == symbol]
+        if row.empty:
+            raise ValueError("未找到该港股代码的行情快照。")
+        raw = clean_record(row.iloc[0].to_dict())
+        result = dict(raw)
+        aliases = {
+            "代码": [code_key], "名称": ["名称", "股票名称", "证券简称", "name"], "最新价": ["最新价", "现价", "price"],
+            "涨跌幅": ["涨跌幅", "zdf"], "成交量": ["成交量", "volume"], "成交额": ["成交额", "amount"],
+            "市盈率-动态": ["市盈率", "市盈率-动态", "pe", "pe_ttm"], "市净率": ["市净率", "pb"],
+            "总市值": ["总市值", "总市值(港元)", "market_cap"],
+        }
+        for target, candidates in aliases.items():
+            value = first_value(raw, *candidates)
+            if value is not None:
+                result[target] = symbol if target == "代码" else value
+        result["代码"] = symbol
+        result["_source"] = "AKShare stock_hk_spot_em"
+        return result
     try:
         frame = ak.stock_zh_a_spot_em()
         row = frame.loc[frame["代码"].astype(str).str.zfill(6) == symbol]
@@ -740,28 +946,39 @@ def spot_row(symbol: str) -> dict:
     return result
 
 
-def quote_response(symbol: str):
-    row = spot_row(symbol)
-    source = row.pop("_source", "AKShare A-share spot")
+def quote_response(symbol: str, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    row = spot_row(symbol, market)
+    source = row.pop("_source", "AKShare spot")
     return {
-        "symbol": symbol, "source": source, "as_of": str(row.get("更新时间") or date.today()),
+        "symbol": symbol, "market": market, "source": source, "as_of": str(row.get("更新时间") or date.today()),
         "note": "数据源快照，不是券商逐笔实时行情。", "quote": row,
     }
 
 
-def valuation_response(symbol: str):
-    row = spot_row(symbol)
-    source = row.pop("_source", "AKShare A-share spot")
+def valuation_response(symbol: str, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    row = spot_row(symbol, market)
+    source = row.pop("_source", "AKShare spot")
     keys = ["代码", "名称", "最新价", "市盈率-动态", "市盈率-静态", "市净率", "总市值", "流通市值", "涨跌幅"]
     return {
-        "symbol": symbol, "source": source, "as_of": str(row.get("更新时间") or date.today()),
+        "symbol": symbol, "market": market, "source": source, "as_of": str(row.get("更新时间") or date.today()),
         "valuation": {key: row.get(key) for key in keys if key in row},
         "note": "PE/PB口径由上游数据源决定；请在正式决策前复核口径和时点。",
     }
 
 
-def fundamentals_response(symbol: str):
-    frame = ak.stock_financial_analysis_indicator(symbol=symbol)
+def fundamentals_response(symbol: str, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    if market == "hk":
+        frame = ak.stock_hk_financial_indicator_em(symbol=symbol)
+        source = "AKShare stock_hk_financial_indicator_em"
+    else:
+        frame = ak.stock_financial_analysis_indicator(symbol=symbol)
+        source = "AKShare stock_financial_analysis_indicator"
     if frame.empty:
         raise ValueError("数据源未返回财务分析指标。")
     report_key = next((key for key in ["日期", "报告期", "报告日期"] if key in frame.columns), None)
@@ -771,24 +988,30 @@ def fundamentals_response(symbol: str):
     records = [clean_record(item) for item in frame.to_dict("records")]
     latest_period = str(records[0].get(report_key)) if records and report_key else None
     return {
-        "symbol": symbol, "source": "AKShare stock_financial_analysis_indicator", "as_of": latest_period or str(date.today()),
+        "symbol": symbol, "market": market, "source": source, "as_of": latest_period or str(date.today()),
         "latest_report_period": latest_period,
         "report_period_field": report_key, "records": records,
         "note": "字段和口径会随上游数据源变化；比较前确认报告期与合并/归母口径。",
     }
 
 
-def announcements_response(symbol: str, start: str, end: str, limit: int):
+def announcements_response(symbol: str, start: str, end: str, limit: int, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
+    if market == "hk":
+        raise ValueError("港股公告尚未接入 HKEX 披露源；不会将港股代码误查询为巨潮 A 股公告。")
     start_date = (pd.Timestamp(start).strftime("%Y%m%d") if start else (date.today() - timedelta(days=180)).strftime("%Y%m%d"))
     end_date = pd.Timestamp(end).strftime("%Y%m%d") if end else date.today().strftime("%Y%m%d")
     frame = ak.stock_zh_a_disclosure_report_cninfo(symbol=symbol, market="沪深京", start_date=start_date, end_date=end_date)
     if frame.empty:
-        return {"symbol": symbol, "source": "CNINFO via AKShare", "as_of": str(date.today()), "announcements": []}
+        return {"symbol": symbol, "market": market, "source": "CNINFO via AKShare", "as_of": str(date.today()), "announcements": []}
     records = [clean_record(item) for item in frame.head(limit).to_dict("records")]
-    return {"symbol": symbol, "source": "CNINFO via AKShare", "as_of": str(date.today()), "announcements": records}
+    return {"symbol": symbol, "market": market, "source": "CNINFO via AKShare", "as_of": str(date.today()), "announcements": records}
 
 
-def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=None):
+def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=None, market: str = "a"):
+    market = normalize_market(market)
+    symbol = normalize_symbol(symbol, market)
     unavailable = []
 
     def attempt(label, function):
@@ -798,13 +1021,16 @@ def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=N
             unavailable.append(f"{label}不可用：{exc}")
             return {}
 
-    quote = attempt("行情", lambda: quote_response(symbol))
-    indicators = attempt("技术指标", lambda: indicators_response(symbol, 260, "qfq"))
-    fundamentals = attempt("财务", lambda: fundamentals_response(symbol))
+    quote = attempt("行情", lambda: quote_response(symbol, market))
+    indicators = attempt("技术指标", lambda: indicators_response(symbol, 260, "qfq", market))
+    fundamentals = attempt("财务", lambda: fundamentals_response(symbol, market))
     valuation = {}
     start = str(date.today() - timedelta(days=announcement_days - 1))
-    announcements = attempt("公告", lambda: announcements_response(symbol, start, str(date.today()), 30))
-    related_enterprises = attempt("相关大型企业", lambda: related_enterprises_response(symbol, 30, 3))
+    announcements = attempt("公告", lambda: announcements_response(symbol, start, str(date.today()), 30, market))
+    related_enterprises = (attempt("相关大型企业", lambda: related_enterprises_response(symbol, 30, 3)) if market == "a" else {
+        "symbol": symbol, "market": market, "enterprises": [],
+        "unavailable": ["港股同行比较尚未接入；不会将 A 股行业成分或巨潮公告套用于港股。"],
+    })
 
     quote_row = quote.get("quote", {})
     if quote_row:
@@ -813,10 +1039,10 @@ def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=N
             "valuation": {key: quote_row.get(key) for key in ["代码", "名称", "最新价", "市盈率-动态", "市盈率-静态", "市净率", "总市值", "流通市值", "涨跌幅"] if key in quote_row},
         }
     else:
-        valuation = attempt("估值", lambda: valuation_response(symbol))
+        valuation = attempt("估值", lambda: valuation_response(symbol, market))
     fallback_name = None
     if not quote_row:
-        search = attempt("股票名称", lambda: stock_search_response(symbol, 1))
+        search = attempt("股票名称", lambda: stock_search_response(symbol, 1, market))
         if search.get("matches"):
             fallback_name = search["matches"][0].get("name")
     latest = indicators.get("latest", {})
@@ -871,14 +1097,18 @@ def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=N
     base_buy_percentage = int(round(max(5, min(95, 50 + directional_score)))) if signal_count else 50
     if panorama is None:
         try:
-            panorama = market_panorama_response()
+            panorama = market_panorama_response(market=market)
         except Exception as exc:
             panorama = None
             unavailable.append(f"市场全景不可用：{exc}")
     market_context = market_context_summary(panorama)
     unavailable.extend(f"市场全景：{item}" for item in market_context.get("unavailable", []))
     unavailable = list(dict.fromkeys(unavailable))
-    calibrated = calibrate_buy_sell(base_buy_percentage, panorama)
+    feedback = reflection_adjustment(symbol, market)
+    reflection_base = int(round(max(5, min(95, base_buy_percentage + feedback["adjustment"]))))
+    calibrated = calibrate_buy_sell(reflection_base, panorama)
+    calibrated["raw_base_buy_percentage"] = base_buy_percentage
+    calibrated["reflection_adjustment"] = feedback["adjustment"]
     buy_percentage, sell_percentage = calibrated["buy_percentage"], calibrated["sell_percentage"]
     if signal_count < 3:
         trade_conclusion = "信息不足，暂缓决策"
@@ -888,9 +1118,9 @@ def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=N
         trade_conclusion = "建议卖出"
     else:
         trade_conclusion = "建议持有观察"
-    confidence = min(90, 20 + signal_count * 9)
+    confidence = max(10, min(90, 20 + signal_count * 9 - feedback["contradicted"] * 3))
     return {
-        "symbol": symbol, "name": first_value(quote_row, "名称", "name") or fallback_name,
+        "symbol": symbol, "market": market, "name": first_value(quote_row, "名称", "name") or fallback_name,
         "as_of": indicators.get("as_of") or quote.get("as_of") or fundamentals.get("as_of"),
         "short_term": {"horizon": "未来1–4周", "action": short_label, "evidence": short_points or ["技术数据不足"]},
         "long_term": {"horizon": "未来6–24个月", "action": long_label, "evidence": long_points},
@@ -907,11 +1137,145 @@ def analyze_stock_response(symbol: str, announcement_days: int = 180, panorama=N
         "financial_history": fundamentals.get("records", []),
         "recent_announcements": announcements.get("announcements", []),
         "related_large_enterprises": related_enterprises,
+        "historical_reflections": feedback,
         "market_context": market_context,
         "quote": quote, "indicators": indicators, "valuation": valuation,
         "unavailable": unavailable,
         "risk_note": "买卖结论基于历史数据和公开披露，可能随价格、财报或公告变化；需结合行业周期、公告原文与个人风险承受能力复核。",
     }
+
+
+def report_item_price(item: dict):
+    direct = safe_float(item.get("price"))
+    if direct is not None:
+        return direct
+    quote_container = item.get("quote") or {}
+    quote_row = quote_container.get("quote", quote_container) if isinstance(quote_container, dict) else {}
+    quote_price = safe_float(first_value(quote_row, "最新价", "现价", "price"))
+    return quote_price if quote_price is not None else safe_float((item.get("indicators") or {}).get("latest", {}).get("close"))
+
+
+def intraday_alignment(conclusion: str, return_pct):
+    if return_pct is None:
+        return "insufficient"
+    if conclusion == "建议买入":
+        return "contradicted" if return_pct <= -2 else ("aligned" if return_pct >= 0 else "inconclusive")
+    if conclusion == "建议卖出":
+        return "contradicted" if return_pct >= 2 else ("aligned" if return_pct <= 0 else "inconclusive")
+    if conclusion == "建议持有观察":
+        return "aligned" if abs(return_pct) < 2 else "inconclusive"
+    return "insufficient"
+
+
+def build_intraday_review(morning: dict, afternoon: dict, market: str) -> dict:
+    if not morning:
+        return {
+            "status": "morning_report_missing", "aligned": 0, "contradicted": 0, "inconclusive": 0,
+            "comparisons": [], "note": "未找到同日同市场的日报1结构化快照，日报2无法进行逐股一致性复盘。",
+        }
+    targets = {}
+    for item in (morning.get("candidates") or {}).get("ranking", []):
+        symbol = item.get("symbol")
+        if symbol:
+            targets[symbol] = {
+                "symbol": symbol, "name": item.get("name"), "origin": "日报1候选",
+                "morning_conclusion": item.get("recommendation"), "morning_buy_percentage": item.get("buy_percentage"),
+                "morning_price": report_item_price(item), "morning_reason": item.get("reason"),
+            }
+    for item in morning.get("portfolio", []):
+        symbol = item.get("symbol")
+        if symbol and symbol not in targets:
+            recommendation = item.get("recommendation") or {}
+            targets[symbol] = {
+                "symbol": symbol, "name": item.get("name") or (item.get("holding") or {}).get("name"), "origin": "日报1持仓",
+                "morning_conclusion": recommendation.get("conclusion"), "morning_buy_percentage": recommendation.get("buy_percentage"),
+                "morning_price": report_item_price(item), "morning_reason": "、".join(recommendation.get("basis", [])[:3]),
+            }
+    current_rank = {item.get("symbol"): item for item in (afternoon.get("candidates") or {}).get("ranking", [])}
+    morning_market_score = safe_float(((morning.get("market_panorama") or {}).get("market_state") or {}).get("score"))
+    afternoon_market_score = safe_float(((afternoon.get("market_panorama") or {}).get("market_state") or {}).get("score"))
+    market_delta = (afternoon_market_score - morning_market_score) if morning_market_score is not None and afternoon_market_score is not None else None
+    comparisons, reflection_records = [], []
+    for symbol, baseline in targets.items():
+        unavailable = []
+        current = current_rank.get(symbol, {})
+        current_price = report_item_price(current)
+        daily_change = safe_float(current.get("pct_change_1d"))
+        if current_price is None:
+            try:
+                quote = quote_response(symbol, market)
+                current_price = report_item_price(quote)
+                daily_change = safe_float(first_value(quote.get("quote", {}), "涨跌幅", "zdf"))
+            except Exception as exc:
+                unavailable.append(f"14:30行情不可用：{exc}")
+        morning_price = safe_float(baseline.get("morning_price"))
+        return_pct = round((current_price / morning_price - 1) * 100, 3) if current_price is not None and morning_price not in (None, 0) else None
+        alignment = intraday_alignment(str(baseline.get("morning_conclusion") or ""), return_pct)
+        reasons = []
+        if market_delta is not None and market_delta <= -8 and return_pct is not None and return_pct < 0:
+            reasons.append(f"市场风险分较日报1下降{abs(market_delta):.1f}分，个股下跌与市场转弱同时发生。")
+        elif return_pct is not None and return_pct <= -2:
+            reasons.append("个股相对日报1价格明显走弱，但仅凭行情无法确认公司层面的因果。")
+        elif return_pct is not None and return_pct >= 2:
+            reasons.append("个股相对日报1价格明显走强，但盘中涨幅本身不能验证基本面判断。")
+        elif return_pct is not None:
+            reasons.append("日报1至日报2的价格变化未达到明显背离阈值（2%）。")
+        if daily_change is not None:
+            reasons.append(f"数据源返回的当日涨跌幅为{daily_change:.2f}%。")
+        if current.get("reason"):
+            reasons.append(f"日报2量价/估值证据：{current.get('reason')}")
+        name = str(baseline.get("name") or "").strip()
+        event_groups = afternoon.get("market_panorama") or {}
+        event_candidates = event_groups.get("international_events", []) + event_groups.get("domestic_policies", []) + event_groups.get("other_events", [])
+        matching_events = [event for event in event_candidates if name and name in str(event.get("title", ""))]
+        if matching_events:
+            reasons.append("相关事件线索：" + "；".join(str(event.get("title")) for event in matching_events[:2]) + "。标题仅作线索，需复核原文。")
+        else:
+            reasons.append("当前结构化事件中未找到直接点名该公司的线索；公司公告与突发新闻仍需以正式披露原文复核。")
+        if alignment == "contradicted":
+            lesson = "降低单一动量或早盘快照的权重；后续同类标的需等待价格与市场宽度共同确认，并下调方向置信度。"
+        elif alignment == "aligned":
+            lesson = "本次盘中方向与日报1相符，但仍需跨交易日和更大样本验证，不能据单次结果放大权重。"
+        else:
+            lesson = "本次变化不足以确认或否定日报1；保留原权重并继续收集可验证样本。"
+        record = {
+            **baseline, "date": afternoon.get("as_of", str(date.today())), "market": market,
+            "afternoon_price": current_price, "return_from_morning_pct": return_pct, "daily_change_pct": daily_change,
+            "alignment": alignment, "market_score_change": round(market_delta, 2) if market_delta is not None else None,
+            "reason_analysis": reasons, "reflection": lesson, "unavailable": unavailable,
+            "created_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
+        }
+        comparisons.append(record)
+        reflection_records.append(record)
+    if reflection_records:
+        persist_reflections(reflection_records)
+    counts = {key: sum(item["alignment"] == key for item in comparisons) for key in ("aligned", "contradicted", "inconclusive", "insufficient")}
+    return {
+        "status": "completed", **counts, "comparisons": comparisons,
+        "threshold_note": "买入后跌幅≤-2%或卖出后涨幅≥2%记为明显背离；其余按方向相符、待观察或数据不足分类。",
+        "method_note": "原因只基于两次价格、当日涨跌幅和市场风险分变化；未核验公告或新闻时不作确定性归因。",
+    }
+
+
+def intraday_review_markdown(review: dict) -> list[str]:
+    lines = ["", "## 日报1与日报2一致性复盘", ""]
+    if review.get("status") != "completed":
+        return lines + [f"- {review.get('note', '无法完成复盘。')}"]
+    lines.extend([
+        f"- 结果：相符 {review.get('aligned', 0)}；明显背离 {review.get('contradicted', 0)}；待观察 {review.get('inconclusive', 0)}；数据不足 {review.get('insufficient', 0)}。",
+        f"- 判定口径：{review.get('threshold_note')}", "",
+        "| 代码 | 名称 | 日报1结论 | 日报1价格 | 日报2价格 | 区间变化 | 一致性 | 原因分析 | 反思 |",
+        "|---|---|---|---:|---:|---:|---|---|---|",
+    ])
+    labels = {"aligned": "相符", "contradicted": "明显背离", "inconclusive": "待观察", "insufficient": "数据不足"}
+    for item in review.get("comparisons", []):
+        values = [
+            item.get("symbol"), item.get("name"), item.get("morning_conclusion"), item.get("morning_price"), item.get("afternoon_price"),
+            f"{item['return_from_morning_pct']:.2f}%" if item.get("return_from_morning_pct") is not None else None,
+            labels.get(item.get("alignment"), item.get("alignment")), " ".join(item.get("reason_analysis", [])), item.get("reflection"),
+        ]
+        lines.append("| " + " | ".join(markdown_cell(value) for value in values) + " |")
+    return lines + ["", f"复盘方法：{review.get('method_note')}"]
 
 
 def markdown_cell(value):
@@ -920,32 +1284,35 @@ def markdown_cell(value):
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def daily_report_response(candidate_limit: int = 5):
+def daily_report_response(candidate_limit: int = 5, market: str = "a", session: str = "morning"):
+    market = normalize_market(market)
+    session = normalize_report_session(session)
     portfolio = portfolio_response()
-    has_holdings = bool(portfolio["holdings"])
-    calendar = trading_day_response()
+    selected_holdings = [item for item in portfolio["holdings"] if item.get("market", "a") == market]
+    has_holdings = bool(selected_holdings)
+    calendar = trading_day_response(market=market)
     if not calendar["is_trading_day"]:
         return {
-            "as_of": str(date.today()), "is_trading_day": False, "has_holdings": has_holdings,
+            "as_of": str(date.today()), "market": market, "session": session, "is_trading_day": False, "has_holdings": has_holdings,
             "empty_reason": "non_trading_day", "markdown": "", "source": calendar["source"],
             "note": "今日不是交易日，不生成日报。",
         }
     report_warnings = []
     try:
-        panorama = market_panorama_response()
+        panorama = market_panorama_response(market=market)
         report_warnings.extend(panorama.get("unavailable", []))
     except Exception as exc:
         panorama = {"market_state": {"regime": "neutral", "risk_level": "未知", "reference_position": "待数据恢复", "buy_tendency_adjustment": 0}}
         report_warnings.append(f"市场全景不可用：{exc}")
 
     def analyze_holding(holding):
-        analysis = analyze_stock_response(holding["symbol"], 7, panorama)
+        analysis = analyze_stock_response(holding["symbol"], 7, panorama, market)
         analysis["holding"] = holding
         return analysis
 
-    worker_count = min(8, max(1, len(portfolio["holdings"])))
+    worker_count = min(8, max(1, len(selected_holdings)))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        holdings = list(executor.map(analyze_holding, portfolio["holdings"]))
+        holdings = list(executor.map(analyze_holding, selected_holdings))
     try:
         weekly = market_events_response(7, 20)
         monthly = market_events_response(30, 40)
@@ -954,12 +1321,15 @@ def daily_report_response(candidate_limit: int = 5):
         weekly = {"events": []}
         monthly = {"events": []}
     try:
-        candidates = candidate_ranking_response(candidate_limit, panorama)
+        candidates = candidate_ranking_response(candidate_limit, panorama, market)
     except Exception as exc:
         report_warnings.append(f"候选排行不可用：{exc}")
         candidates = {"ranking": [], "method": "当日候选数据不可用。"}
+    report_number = "日报1" if session == "morning" else "日报2"
+    timing = "09:20开始汇总，目标于09:30开盘前送达" if session == "morning" else "14:30开始汇总，收盘前进行盘中复盘"
+    phase_title = "开盘前" if session == "morning" else "收盘前"
     lines = [
-        "# A股开盘前研究简报", "", f"数据日期：{date.today()}（09:20开始汇总，目标于09:30开盘前10分钟送达）", "",
+        f"# {market_label(market)}{report_number}｜{phase_title}研究简报", "", f"数据日期：{date.today()}（{timing}）", "",
         "## 市场全景", "",
         f"- 市场状态：{panorama.get('market_state', {}).get('summary', '数据不足')}",
         f"- 风险等级：{panorama.get('market_state', {}).get('risk_level', '未知')}；参考仓位：{panorama.get('market_state', {}).get('reference_position', '待评估')}",
@@ -1022,14 +1392,28 @@ def daily_report_response(candidate_limit: int = 5):
             item.get("pct_change_20d"), item.get("pe_ttm"), item.get("recommendation"),
         ]) + " | " + markdown_cell(item.get("reason", "") + item.get("risk", "")) + " |")
     lines.extend(["", f"评分方法：{candidates['method']}", "", "说明：买入/卖出百分比表示当前证据的方向倾向，两者合计100%；不是仓位比例或涨跌概率。结论可能随新行情、财报和公告变化。"])
-    if report_warnings:
-        lines.extend(["", "## 数据缺失", ""] + [f"- {warning}" for warning in report_warnings])
-    return {
-        "as_of": str(date.today()), "is_trading_day": True, "has_holdings": has_holdings, "market_panorama": panorama, "portfolio": holdings,
+    historical = load_reflections(market=market, limit=10)
+    if historical:
+        lines.extend(["", "## 历史反思参考", ""])
+        for item in historical[:5]:
+            lines.append(f"- {item.get('date')} {item.get('symbol')}：{item.get('reflection')}（一致性：{item.get('alignment')}）")
+    payload = {
+        "as_of": str(date.today()), "market": market, "session": session, "report_number": report_number,
+        "is_trading_day": True, "has_holdings": has_holdings, "market_panorama": panorama, "portfolio": holdings,
         "weekly_events": weekly, "monthly_events": monthly, "candidates": candidates,
-        "warnings": report_warnings, "markdown": "\n".join(lines),
+        "historical_reflections": historical, "warnings": report_warnings,
         "note": "未保存持仓，因此本期只生成市场全景和推荐股。" if not has_holdings else "已生成市场全景、持仓分析和推荐股。",
     }
+    if session == "afternoon":
+        morning = load_json_object(snapshot_path(str(date.today()), market, "morning"), {})
+        review = build_intraday_review(morning, payload, market)
+        payload["intraday_review"] = review
+        lines.extend(intraday_review_markdown(review))
+    if report_warnings:
+        lines.extend(["", "## 数据缺失", ""] + [f"- {warning}" for warning in report_warnings])
+    payload["markdown"] = "\n".join(lines)
+    payload["snapshot_path"] = str(save_report_snapshot(payload))
+    return payload
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1054,41 +1438,45 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, portfolio_response())
             if parsed.path == "/v1/search":
                 limit = min(max(int(value("limit", "10")), 1), 50)
-                return self.send_json(200, stock_search_response(value("query"), limit))
+                return self.send_json(200, stock_search_response(value("query"), limit, value("market", "a")))
             if parsed.path == "/v1/trading-day":
-                return self.send_json(200, trading_day_response(value("date")))
+                return self.send_json(200, trading_day_response(value("date"), value("market", "a")))
             if parsed.path == "/v1/market-brief":
                 limit = min(max(int(value("event_limit", "20")), 1), 50)
-                return self.send_json(200, market_brief_response(limit))
+                return self.send_json(200, market_brief_response(limit, value("market", "a")))
             if parsed.path == "/v1/market-events":
                 days = min(max(int(value("days", "7")), 1), 90)
                 limit = min(max(int(value("limit", "20")), 1), 100)
                 return self.send_json(200, market_events_response(days, limit))
             if parsed.path == "/v1/market-movers":
                 limit = min(max(int(value("limit", "20")), 1), 50)
-                return self.send_json(200, market_movers_response(limit))
+                return self.send_json(200, market_movers_response(limit, value("market", "a")))
             if parsed.path == "/v1/market-panorama":
-                return self.send_json(200, market_panorama_response())
+                return self.send_json(200, market_panorama_response(value("market", "a")))
             if parsed.path == "/v1/candidate-ranking":
                 limit = min(max(int(value("limit", "5")), 1), 20)
-                return self.send_json(200, candidate_ranking_response(limit))
+                return self.send_json(200, candidate_ranking_response(limit, market=value("market", "a")))
             if parsed.path == "/v1/daily-report":
                 limit = min(max(int(value("candidate_limit", "5")), 1), 20)
-                return self.send_json(200, daily_report_response(limit))
-            symbol = value("symbol")
-            if not symbol.isdigit() or len(symbol) != 6:
-                raise ValueError("symbol 必须是6位A股代码。")
-            if parsed.path == "/v1/quote": payload = quote_response(symbol)
-            elif parsed.path == "/v1/ohlcv": payload = bars_response(symbol, value("start"), value("end"), value("adjust", "qfq"))
-            elif parsed.path == "/v1/indicators": payload = indicators_response(symbol, int(value("lookback", "260")), value("adjust", "qfq"))
-            elif parsed.path == "/v1/fundamentals": payload = fundamentals_response(symbol)
-            elif parsed.path == "/v1/announcements": payload = announcements_response(symbol, value("start"), value("end"), min(max(int(value("limit", "20")), 1), 100))
-            elif parsed.path == "/v1/valuation": payload = valuation_response(symbol)
+                return self.send_json(200, daily_report_response(limit, value("market", "a"), value("session", "morning")))
+            if parsed.path == "/v1/reflections":
+                limit = min(max(int(value("limit", "50")), 1), 200)
+                return self.send_json(200, reflections_response(value("market", "a"), value("symbol"), limit))
+            market = normalize_market(value("market", "a"))
+            symbol = normalize_symbol(value("symbol"), market)
+            if parsed.path == "/v1/quote": payload = quote_response(symbol, market)
+            elif parsed.path == "/v1/ohlcv": payload = bars_response(symbol, value("start"), value("end"), value("adjust", "qfq"), market)
+            elif parsed.path == "/v1/indicators": payload = indicators_response(symbol, int(value("lookback", "260")), value("adjust", "qfq"), market)
+            elif parsed.path == "/v1/fundamentals": payload = fundamentals_response(symbol, market)
+            elif parsed.path == "/v1/announcements": payload = announcements_response(symbol, value("start"), value("end"), min(max(int(value("limit", "20")), 1), 100), market)
+            elif parsed.path == "/v1/valuation": payload = valuation_response(symbol, market)
             elif parsed.path == "/v1/related-enterprises":
+                if market != "a":
+                    raise ValueError("港股同行比较尚未接入；不会将 A 股行业成分用于港股。")
                 payload = related_enterprises_response(
                     symbol, min(max(int(value("days", "30")), 1), 180), min(max(int(value("limit", "3")), 1), 5),
                 )
-            elif parsed.path == "/v1/analysis": payload = analyze_stock_response(symbol, min(max(int(value("announcement_days", "180")), 1), 730))
+            elif parsed.path == "/v1/analysis": payload = analyze_stock_response(symbol, min(max(int(value("announcement_days", "180")), 1), 730), market=market)
             else: return self.send_json(404, {"error": "Unknown endpoint"})
             self.send_json(200, payload)
         except Exception as exc:

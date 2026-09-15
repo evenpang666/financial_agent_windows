@@ -2,7 +2,12 @@
   "enabled": true,
   "data_service_url": "http://127.0.0.1:8765",
   "scheduled_time": "09:20",
+  "schedules": {
+    "morning": "09:20",
+    "afternoon": "14:30"
+  },
   "candidate_limit": 5,
+  "market": "a",
   "report_site_url": "http://127.0.0.1:8766",
   "webhook_type": "generic",
   "webhook_url": ""

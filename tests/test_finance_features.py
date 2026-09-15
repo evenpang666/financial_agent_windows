@@ -40,6 +40,19 @@ spec.loader.exec_module(server)
 
 
 class FinanceFeatureTests(unittest.TestCase):
+    def setUp(self):
+        self._data_tmp = tempfile.TemporaryDirectory()
+        root = Path(self._data_tmp.name)
+        self._snapshot_patch = patch.object(server, "REPORT_SNAPSHOT_DIR", root / "snapshots")
+        self._reflection_patch = patch.object(server, "REFLECTION_FILE", root / "reflections.json")
+        self._snapshot_patch.start()
+        self._reflection_patch.start()
+
+    def tearDown(self):
+        self._reflection_patch.stop()
+        self._snapshot_patch.stop()
+        self._data_tmp.cleanup()
+
     def test_daily_report_without_holdings_keeps_panorama_and_candidates(self):
         panorama = {
             "market_state": {"summary": "中性市场", "risk_level": "中", "reference_position": "40%–60%", "buy_tendency_adjustment": 0},
@@ -76,6 +89,18 @@ class FinanceFeatureTests(unittest.TestCase):
         self.assertEqual(result["ranking"][0]["rank"], 1)
         self.assertEqual(result["ranking"][0]["buy_percentage"] + result["ranking"][0]["sell_percentage"], 100)
         self.assertIn(result["ranking"][0]["recommendation"], {"建议买入", "建议持有观察", "建议卖出"})
+
+    def test_candidate_ranking_applies_persisted_reflection_adjustment(self):
+        server.persist_reflections([{
+            "date": "2026-09-14", "market": "a", "symbol": "600519",
+            "morning_conclusion": "建议买入", "alignment": "contradicted", "created_at": "2026-09-14T14:30:00+08:00",
+        }])
+        panorama = {"market_state": {"buy_tendency_adjustment": 0}, "unavailable": []}
+        result = server.candidate_ranking_response(5, panorama, "a")
+        item = next(row for row in result["ranking"] if row["symbol"] == "600519")
+        self.assertEqual(item["reflection_adjustment"], -3)
+        self.assertEqual(item["base_buy_percentage"], round(item["raw_score"] - 3))
+        self.assertEqual(item["reflection_context"]["contradicted"], 1)
 
     def test_market_breadth_and_risk_calibration_are_auditable(self):
         frame = pd.DataFrame([
@@ -201,6 +226,117 @@ class FinanceFeatureTests(unittest.TestCase):
         self.assertIn("国际事件", result["markdown"])
         self.assertIn("国内政策", result["markdown"])
         self.assertEqual(result["market_panorama"]["market_state"]["risk_level"], "高")
+
+
+    def test_intraday_review_records_contradiction_and_updates_feedback(self):
+        morning = {
+            "as_of": "2026-09-15", "market": "a",
+            "market_panorama": {"market_state": {"score": 65}},
+            "portfolio": [],
+            "candidates": {"ranking": [{
+                "symbol": "600519", "name": "贵州茅台", "price": 100,
+                "recommendation": "建议买入", "buy_percentage": 72, "reason": "早盘动量偏强",
+            }]},
+        }
+        afternoon = {
+            "as_of": "2026-09-15", "market": "a",
+            "market_panorama": {"market_state": {"score": 50}},
+            "candidates": {"ranking": [{"symbol": "600519", "name": "贵州茅台", "price": 96, "pct_change_1d": -4}]},
+        }
+        review = server.build_intraday_review(morning, afternoon, "a")
+        self.assertEqual(review["contradicted"], 1)
+        self.assertEqual(review["comparisons"][0]["return_from_morning_pct"], -4.0)
+        self.assertIn("市场风险分", review["comparisons"][0]["reason_analysis"][0])
+        feedback = server.reflection_adjustment("600519", "a")
+        self.assertEqual(feedback["sample_size"], 1)
+        self.assertEqual(feedback["adjustment"], -3)
+
+    def test_afternoon_report_loads_morning_snapshot_and_appends_review(self):
+        morning = {
+            "as_of": str(server.date.today()), "market": "a", "session": "morning",
+            "market_panorama": {"market_state": {"score": 60}}, "portfolio": [],
+            "candidates": {"ranking": [{"symbol": "600519", "name": "贵州茅台", "price": 100, "recommendation": "建议买入", "buy_percentage": 70}]},
+            "markdown": "# 日报1",
+        }
+        server.save_report_snapshot(morning)
+        panorama = {
+            "market_state": {"summary": "盘中转弱", "score": 45, "risk_level": "中", "reference_position": "40%–60%", "buy_tendency_adjustment": 0},
+            "market_breadth": {"label": "偏弱", "advancing": 1000, "declining": 3000, "score": 35},
+            "social_sentiment": {"label": "偏谨慎", "score": 35},
+            "international_events": [], "domestic_policies": [], "unavailable": [],
+        }
+        ranking = {"ranking": [{"symbol": "600519", "name": "贵州茅台", "price": 96, "pct_change_1d": -4, "rank": 1, "score": 40, "buy_percentage": 40, "sell_percentage": 60, "recommendation": "建议持有观察"}], "method": "测试"}
+        with patch.object(server, "trading_day_response", return_value={"is_trading_day": True, "source": "test"}), \
+             patch.object(server, "portfolio_response", return_value={"holdings": []}), \
+             patch.object(server, "market_panorama_response", return_value=panorama), \
+             patch.object(server, "market_events_response", return_value={"events": []}), \
+             patch.object(server, "candidate_ranking_response", return_value=ranking):
+            report = server.daily_report_response(5, "a", "afternoon")
+        self.assertEqual(report["session"], "afternoon")
+        self.assertEqual(report["intraday_review"]["contradicted"], 1)
+        self.assertIn("日报1与日报2一致性复盘", report["markdown"])
+        self.assertIn("明显背离", report["markdown"])
+
+    def test_hk_symbol_normalization_and_mixed_portfolio(self):
+        self.assertEqual(server.normalize_hk_symbol("700"), "00700")
+        self.assertEqual(server.normalize_hk_symbol("HK:00700"), "00700")
+        self.assertEqual(server.normalize_hk_symbol("HKG00700"), "00700")
+        self.assertEqual(server.normalize_hk_symbol("00700.HK"), "00700")
+        holding = server.normalize_holding({"market": "hk", "symbol": "700", "name": "腾讯控股"})
+        self.assertEqual(holding, {"symbol": "00700", "market": "hk", "name": "腾讯控股"})
+        with self.assertRaises(ValueError):
+            server.normalize_holding({"market": "hk", "symbol": "ABC"})
+
+    def test_hk_search_quote_and_fundamentals_use_hk_sources(self):
+        spot = pd.DataFrame([{
+            "代码": "00700", "名称": "腾讯控股", "最新价": 500, "涨跌幅": 1.2,
+            "成交量": 1000, "成交额": 500000, "市盈率": 22, "市净率": 4, "总市值": 4600000,
+        }])
+        indicators = pd.DataFrame([{"报告期": "2026-06-30", "股东权益回报率(%)": 18.5, "营业总收入": 1000}])
+        with patch.object(server.ak, "stock_hk_spot_em", create=True, return_value=spot), \
+             patch.object(server.ak, "stock_hk_financial_indicator_em", create=True, return_value=indicators):
+            search = server.stock_search_response("700", 10, "hk")
+            quote = server.quote_response("700", "hk")
+            fundamentals = server.fundamentals_response("00700", "hk")
+        self.assertEqual(search["matches"], [{"symbol": "00700", "name": "腾讯控股"}])
+        self.assertEqual(quote["market"], "hk")
+        self.assertEqual(quote["quote"]["代码"], "00700")
+        self.assertEqual(quote["quote"]["市盈率-动态"], 22)
+        self.assertEqual(fundamentals["market"], "hk")
+        self.assertEqual(fundamentals["source"], "AKShare stock_hk_financial_indicator_em")
+        self.assertEqual(fundamentals["latest_report_period"], "2026-06-30")
+
+    def test_hk_announcements_are_not_sent_to_cninfo(self):
+        with self.assertRaisesRegex(ValueError, "HKEX"):
+            server.announcements_response("00700", "2026-01-01", "2026-09-15", 20, "hk")
+
+    def test_hk_daily_report_only_analyzes_hk_holdings(self):
+        panorama = {
+            "market_state": {"summary": "测试市场状态", "risk_level": "中", "reference_position": "40%–60%", "buy_tendency_adjustment": 0},
+            "market_breadth": {"label": "均衡", "advancing": 100, "declining": 100, "score": 50},
+            "social_sentiment": {"label": "中性", "score": 50},
+            "international_events": [], "domestic_policies": [], "unavailable": [],
+        }
+        analysis = {
+            "symbol": "00700", "market": "hk", "name": "腾讯控股", "as_of": "2026-09-14",
+            "short_term": {"action": "短期继续跟踪", "evidence": ["价格高于MA20"]},
+            "long_term": {"action": "长期继续观察", "evidence": ["PE可得"]},
+            "recommendation": {"buy_percentage": 60, "sell_percentage": 40, "conclusion": "建议持有观察"},
+            "latest_report_period": "2026-06-30", "unavailable": [], "risk_note": "汇率风险",
+        }
+        ranking = {"ranking": [], "method": "测试评分"}
+        with patch.object(server, "trading_day_response", return_value={"is_trading_day": True, "source": "test"}) as calendar, \
+             patch.object(server, "portfolio_response", return_value={"holdings": [{"symbol": "600519"}, {"symbol": "00700", "market": "hk"}]}), \
+             patch.object(server, "market_panorama_response", return_value=panorama) as panorama_call, \
+             patch.object(server, "analyze_stock_response", return_value=analysis), \
+             patch.object(server, "market_events_response", return_value={"events": []}), \
+             patch.object(server, "candidate_ranking_response", return_value=ranking):
+            result = server.daily_report_response(5, "hk")
+        self.assertEqual(result["market"], "hk")
+        self.assertEqual([item["symbol"] for item in result["portfolio"]], ["00700"])
+        self.assertIn("# 港股日报1｜开盘前研究简报", result["markdown"])
+        calendar.assert_called_once_with(market="hk")
+        panorama_call.assert_called_once_with(market="hk")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
@@ -17,6 +18,21 @@ class DailyPushTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = daily_push.load_config(Path(directory) / "missing.json")
         self.assertEqual(config["scheduled_time"], "09:20")
+
+    def test_default_schedule_includes_morning_and_afternoon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = daily_push.load_config(Path(directory) / "missing.json")
+        self.assertEqual(config["schedules"], {"morning": "09:20", "afternoon": "14:30"})
+
+    def test_next_scheduled_run_selects_afternoon(self):
+        config = {"schedules": {"morning": "09:20", "afternoon": "14:30"}}
+        delay, session = daily_push.next_scheduled_run(config, datetime(2026, 9, 15, 10, 0, tzinfo=daily_push.CHINA_TZ))
+        self.assertEqual(session, "afternoon")
+        self.assertEqual(delay, 4.5 * 3600)
+
+    def test_webhook_payload_labels_afternoon_report(self):
+        payload = daily_push.webhook_payload("dingtalk", "# A股日报2｜收盘前研究简报")
+        self.assertEqual(payload["markdown"]["title"], "A股收盘前研究简报")
 
     def test_supported_webhook_payloads(self):
         self.assertEqual(daily_push.webhook_payload("feishu", "x")["msg_type"], "text")
@@ -36,6 +52,23 @@ class DailyPushTests(unittest.TestCase):
             post.assert_called_once_with("http://hook", "generic", "# report")
             notify.assert_called_once()
             self.assertTrue(any((Path(directory) / "reports").glob("*.md")))
+
+    def test_morning_and_afternoon_have_independent_success_state(self):
+        config = {"enabled": True, "data_service_url": "http://test", "candidate_limit": 5, "market": "a", "webhook_url": ""}
+        report = {"is_trading_day": True, "markdown": "# report"}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(daily_push, "STATE_FILE", Path(directory) / "state.json"), \
+             patch.object(daily_push, "REPORT_DIR", Path(directory) / "reports"), \
+             patch.object(daily_push, "get_json", return_value=report) as get_json, \
+             patch.object(daily_push, "notify_report_site"):
+            self.assertTrue(daily_push.run_once(config, session="morning"))
+            self.assertFalse(daily_push.run_once(config, session="morning"))
+            self.assertTrue(daily_push.run_once(config, session="afternoon"))
+            self.assertFalse(daily_push.run_once(config, session="afternoon"))
+            names = sorted(path.name for path in (Path(directory) / "reports").glob("*.md"))
+        self.assertEqual(get_json.call_count, 2)
+        self.assertTrue(any(name.endswith("-a-morning.md") for name in names))
+        self.assertTrue(any(name.endswith("-a-afternoon.md") for name in names))
 
     def test_non_trading_day_does_not_push(self):
         config = {"enabled": True, "data_service_url": "http://test", "candidate_limit": 5, "webhook_url": "http://hook"}

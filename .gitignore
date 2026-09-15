@@ -6,3 +6,5 @@ data/daily-push-state.json
 data/market-events.json
 data/reports/
 config/daily-push.json
+data/report-snapshots/
+data/research-reflections.json

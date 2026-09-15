@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Trading-day 09:20 report scheduler with local archive and optional webhook push."""
+"""Trading-day 09:20/14:30 report scheduler with archive, review, and optional webhook."""
 
 from __future__ import annotations
 
@@ -31,7 +31,9 @@ def load_config(path: Path) -> dict:
         "enabled": True,
         "data_service_url": "http://127.0.0.1:8765",
         "scheduled_time": "09:20",
+        "schedules": {"morning": "09:20", "afternoon": "14:30"},
         "candidate_limit": 5,
+        "market": "a",
         "report_site_url": "http://127.0.0.1:8766",
         "webhook_type": "generic",
         "webhook_url": "",
@@ -41,6 +43,8 @@ def load_config(path: Path) -> dict:
         if not isinstance(supplied, dict):
             raise ValueError("推送配置必须是 JSON 对象。")
         defaults.update(supplied)
+        if "schedules" not in supplied and "scheduled_time" in supplied:
+            defaults["schedules"] = {"morning": str(supplied["scheduled_time"]), "afternoon": "14:30"}
     env_url = os.getenv("FINANCE_AGENT_WEBHOOK_URL", "").strip()
     if env_url:
         defaults["webhook_url"] = env_url
@@ -55,13 +59,19 @@ def get_json(url: str, timeout: int = 120) -> dict:
 
 def webhook_payload(kind: str, markdown: str) -> dict:
     kind = kind.lower()
+    heading = str(markdown).lstrip()
+    is_hk = heading.startswith("# 港股")
+    is_afternoon = "日报2" in heading.splitlines()[0] if heading else False
+    market_name = "港股" if is_hk else "A股"
+    title = f"{market_name}{'收盘前' if is_afternoon else '开盘前'}研究简报"
     if kind == "feishu":
         return {"msg_type": "text", "content": {"text": markdown}}
     if kind == "wecom":
         return {"msgtype": "markdown", "markdown": {"content": markdown}}
     if kind == "dingtalk":
-        return {"msgtype": "markdown", "markdown": {"title": "A股开盘前研究简报", "text": markdown}}
-    return {"text": markdown, "content": markdown, "type": "a_share_daily_research"}
+        return {"msgtype": "markdown", "markdown": {"title": title, "text": markdown}}
+    report_type = ("hk" if is_hk else "a_share") + ("_afternoon_review" if is_afternoon else "_morning_research")
+    return {"text": markdown, "content": markdown, "type": report_type}
 
 
 def post_webhook(url: str, kind: str, markdown: str):
@@ -72,8 +82,8 @@ def post_webhook(url: str, kind: str, markdown: str):
             raise RuntimeError(f"Webhook 返回 HTTP {response.status}")
 
 
-def notify_report_site(base_url: str, report_date: str):
-    body = json.dumps({"date": report_date}, ensure_ascii=False).encode("utf-8")
+def notify_report_site(base_url: str, report_id: str):
+    body = json.dumps({"id": report_id}, ensure_ascii=False).encode("utf-8")
     request = Request(str(base_url).rstrip("/") + "/api/publish", data=body, method="POST", headers={"Content-Type": "application/json; charset=utf-8"})
     with urlopen(request, timeout=5) as response:
         if response.status >= 300:
@@ -94,75 +104,117 @@ def save_state(payload: dict):
     STATE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def archive_report(day: str, markdown: str) -> Path:
+def archive_report(report_id: str, markdown: str) -> Path:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    target = REPORT_DIR / f"{day}.md"
+    target = REPORT_DIR / f"{report_id}.md"
     target.write_text(markdown, encoding="utf-8")
     return target
 
 
-def run_once(config: dict, force: bool = False) -> bool:
+def normalize_schedules(config: dict) -> dict[str, str]:
+    supplied = config.get("schedules")
+    schedules = supplied if isinstance(supplied, dict) else {"morning": config.get("scheduled_time", "09:20"), "afternoon": "14:30"}
+    result = {}
+    for session in ("morning", "afternoon"):
+        value = str(schedules.get(session, "09:20" if session == "morning" else "14:30"))
+        parse_hhmm(value)
+        result[session] = value
+    return result
+
+
+def session_for_now(config: dict, now: datetime | None = None) -> str:
+    now = now or datetime.now(CHINA_TZ)
+    schedules = normalize_schedules(config)
+    afternoon_hour, afternoon_minute = parse_hhmm(schedules["afternoon"])
+    boundary = now.replace(hour=afternoon_hour, minute=afternoon_minute, second=0, microsecond=0)
+    return "afternoon" if now >= boundary else "morning"
+
+
+def run_once(config: dict, force: bool = False, session: str = "morning") -> bool:
     if not config.get("enabled", True):
         log("推送已在配置中禁用。")
         return False
+    session = str(session or "morning").strip().lower()
+    if session not in {"morning", "afternoon"}:
+        raise ValueError("session 必须是 morning 或 afternoon。")
+    phase_name = "日报1（开盘前）" if session == "morning" else "日报2（收盘前复盘）"
     today = datetime.now(CHINA_TZ).date().isoformat()
     state = load_state()
-    if not force and state.get("last_success_date") == today:
-        log("今日简报已成功生成，跳过重复推送。")
+    selected_market = str(config.get("market", "a")).strip().lower()
+    if selected_market not in {"a", "hk"}:
+        raise ValueError("market 必须是 a（A股）或 hk（港股）。")
+    state_key = f"{today}:{selected_market}:{session}"
+    completed = state.get("completed", {}) if isinstance(state.get("completed"), dict) else {}
+    legacy_done = session == "morning" and state.get("last_success_date") == today
+    if not force and (completed.get(state_key) or legacy_done):
+        log(f"今日{phase_name}已成功生成，跳过重复推送。")
         return False
     base_url = str(config["data_service_url"]).rstrip("/")
-    query = urlencode({"candidate_limit": int(config.get("candidate_limit", 5))})
+    query = urlencode({"candidate_limit": int(config.get("candidate_limit", 5)), "market": selected_market, "session": session})
     report = get_json(f"{base_url}/v1/daily-report?{query}")
     if not report.get("is_trading_day"):
-        log("今日不是交易日，不生成或推送开盘前简报。")
+        log(f"今日不是交易日，不生成或推送{phase_name}。")
         return False
     markdown = str(report.get("markdown", "")).strip()
     if not markdown:
         raise RuntimeError("数据服务未返回简报正文。")
-    report_path = archive_report(today, markdown)
+    report_id = f"{today}-{selected_market}-{session}"
+    report_path = archive_report(report_id, markdown)
     try:
-        notify_report_site(str(config.get("report_site_url", "http://127.0.0.1:8766")), today)
-        log("本地日报网页已收到更新通知。")
+        notify_report_site(str(config.get("report_site_url", "http://127.0.0.1:8766")), report_id)
+        log(f"本地日报网页已收到{phase_name}更新通知。")
     except (HTTPError, URLError, OSError, RuntimeError) as exc:
-        log(f"日报已归档，但网页即时通知失败：{exc}；页面下次刷新时仍会读取该日报。")
+        log(f"{phase_name}已归档，但网页即时通知失败：{exc}；页面下次刷新时仍会读取该日报。")
     webhook_url = str(config.get("webhook_url", "")).strip()
     if webhook_url:
         post_webhook(webhook_url, str(config.get("webhook_type", "generic")), markdown)
         destination = "环境变量 Webhook" if os.getenv("FINANCE_AGENT_WEBHOOK_URL", "").strip() else str(config.get("webhook_type", "generic")) + " Webhook"
-        log(f"简报已推送至{destination}。")
+        log(f"{phase_name}已推送至{destination}。")
     else:
-        log("未配置 Webhook；简报仅归档到本地。")
-    save_state({"last_success_date": today, "report_path": str(report_path), "pushed": bool(webhook_url)})
-    log(f"简报已生成：{report_path}")
+        log(f"未配置 Webhook；{phase_name}仅归档到本地。")
+    completed[state_key] = {"report_path": str(report_path), "pushed": bool(webhook_url), "completed_at": datetime.now(CHINA_TZ).isoformat()}
+    state.update({"completed": completed, "last_success_date": today if session == "morning" else state.get("last_success_date")})
+    save_state(state)
+    log(f"{phase_name}已生成：{report_path}")
     return True
 
 
-def seconds_until_schedule(hhmm: str) -> float:
+def parse_hhmm(hhmm: str) -> tuple[int, int]:
     try:
-        hour, minute = (int(part) for part in hhmm.split(":"))
+        hour, minute = (int(part) for part in str(hhmm).split(":"))
         if not 0 <= hour <= 23 or not 0 <= minute <= 59:
             raise ValueError
     except (ValueError, AttributeError):
-        raise ValueError("scheduled_time 必须使用 HH:MM 格式。")
-    now = datetime.now(CHINA_TZ)
+        raise ValueError("推送时间必须使用 HH:MM 格式。")
+    return hour, minute
+
+
+def seconds_until_schedule(hhmm: str, now: datetime | None = None) -> float:
+    hour, minute = parse_hhmm(hhmm)
+    now = now or datetime.now(CHINA_TZ)
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += timedelta(days=1)
     return max(1.0, (target - now).total_seconds())
 
 
+def next_scheduled_run(config: dict, now: datetime | None = None) -> tuple[float, str]:
+    now = now or datetime.now(CHINA_TZ)
+    candidates = [(seconds_until_schedule(hhmm, now), session) for session, hhmm in normalize_schedules(config).items()]
+    return min(candidates, key=lambda item: item[0])
+
+
 def run_daemon(config_path: Path):
-    log(f"每日推送服务已启动，配置：{config_path}")
+    log(f"双时点日报推送服务已启动，配置：{config_path}")
     while True:
         try:
             config = load_config(config_path)
-            delay = seconds_until_schedule(str(config.get("scheduled_time", "09:20")))
-            log(f"下一次检查将在约 {delay / 3600:.1f} 小时后执行。")
+            delay, session = next_scheduled_run(config)
+            log(f"下一次{session}检查将在约 {delay / 3600:.1f} 小时后执行。")
             time.sleep(delay)
-            # Reload so webhook and candidate count changes do not require a restart.
             for attempt in range(1, 4):
                 try:
-                    run_once(load_config(config_path))
+                    run_once(load_config(config_path), session=session)
                     break
                 except (HTTPError, URLError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
                     if attempt == 3:
@@ -178,15 +230,16 @@ def run_daemon(config_path: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="A股交易日开盘前研究简报推送")
+    parser = argparse.ArgumentParser(description="A股/港股交易日双时点研究简报推送")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--once", action="store_true", help="立即检查交易日并执行一次")
+    parser.add_argument("--session", choices=["morning", "afternoon"], help="指定日报1或日报2；省略时按当前时间选择")
     parser.add_argument("--force", action="store_true", help="忽略当天已成功状态，重新执行")
     args = parser.parse_args()
     try:
         config = load_config(args.config)
         if args.once:
-            run_once(config, force=args.force)
+            run_once(config, force=args.force, session=args.session or session_for_now(config))
         else:
             run_daemon(args.config)
     except Exception as exc:

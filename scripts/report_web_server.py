@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Serve archived A-share daily reports to devices on the local network."""
+"""Serve archived morning and afternoon stock reports on the local network."""
 
 from __future__ import annotations
 
@@ -20,17 +20,28 @@ WEB_ROOT = PROJECT_ROOT / "web"
 REPORT_DIR = PROJECT_ROOT / "data" / "reports"
 HOST = os.getenv("FINANCE_REPORT_HOST", "0.0.0.0")
 PORT = int(os.getenv("FINANCE_REPORT_PORT", "8766"))
-REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-(?:a|hk)-(?:morning|afternoon))?\.md$")
 SUBSCRIBERS: set[queue.Queue] = set()
 SUBSCRIBERS_LOCK = threading.Lock()
 
 
-def publish_report_event(report_date: str):
-    message = json.dumps({"date": report_date}, ensure_ascii=False)
+def publish_report_event(report_id: str):
+    message = json.dumps({"id": report_id}, ensure_ascii=False)
     with SUBSCRIBERS_LOCK:
         subscribers = list(SUBSCRIBERS)
     for subscriber in subscribers:
         subscriber.put(message)
+
+
+def report_metadata(report_id: str) -> dict:
+    parts = report_id.split("-")
+    if len(parts) == 5 and parts[3] in {"a", "hk"} and parts[4] in {"morning", "afternoon"}:
+        day, market, session = "-".join(parts[:3]), parts[3], parts[4]
+    else:
+        day, market, session = report_id, "a", "legacy"
+    market_label = "港股" if market == "hk" else "A股"
+    session_label = "日报2·收盘前" if session == "afternoon" else ("日报1·开盘前" if session == "morning" else "历史日报")
+    return {"id": report_id, "date": day, "market": market, "session": session, "label": f"{day} · {market_label}{session_label}"}
 
 
 def list_reports():
@@ -42,11 +53,12 @@ def list_reports():
             continue
         stat = path.stat()
         reports.append({
-            "date": path.stem,
+            **report_metadata(path.stem),
             "updated_at": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
             "size": stat.st_size,
         })
-    return sorted(reports, key=lambda item: item["date"], reverse=True)
+    session_order = {"afternoon": 2, "morning": 1, "legacy": 0}
+    return sorted(reports, key=lambda item: (item["date"], session_order.get(item["session"], 0), item["updated_at"]), reverse=True)
 
 
 def read_report(filename: str):
@@ -57,8 +69,7 @@ def read_report(filename: str):
         return None
     stat = path.stat()
     return {
-        "available": True,
-        "date": path.stem,
+        "available": True, **report_metadata(path.stem),
         "updated_at": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
         "markdown": path.read_text(encoding="utf-8"),
     }
@@ -97,7 +108,7 @@ class ReportHandler(BaseHTTPRequestHandler):
                 reports = list_reports()
                 if not reports:
                     return self.send_json(200, {"available": False, "markdown": ""})
-                return self.send_json(200, read_report(reports[0]["date"] + ".md"))
+                return self.send_json(200, read_report(reports[0]["id"] + ".md"))
             if path.startswith("/api/reports/"):
                 filename = path.removeprefix("/api/reports/") + ".md"
                 report = read_report(filename)
@@ -123,11 +134,11 @@ class ReportHandler(BaseHTTPRequestHandler):
             if length <= 0 or length > 10_000:
                 raise ValueError("请求体大小无效。")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            report_date = str(payload.get("date", ""))
-            if not REPORT_NAME.fullmatch(report_date + ".md") or not (REPORT_DIR / f"{report_date}.md").exists():
-                raise ValueError("日报日期无效或文件不存在。")
-            publish_report_event(report_date)
-            self.send_json(200, {"published": True, "date": report_date})
+            report_id = str(payload.get("id") or payload.get("date") or "")
+            if not REPORT_NAME.fullmatch(report_id + ".md") or not (REPORT_DIR / f"{report_id}.md").exists():
+                raise ValueError("日报标识无效或文件不存在。")
+            publish_report_event(report_id)
+            self.send_json(200, {"published": True, "id": report_id})
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
 
@@ -161,5 +172,5 @@ class ReportHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"A-share report site: http://{HOST}:{PORT}", flush=True)
+    print(f"Stock report site: http://{HOST}:{PORT}", flush=True)
     ThreadingHTTPServer((HOST, PORT), ReportHandler).serve_forever()

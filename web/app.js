@@ -61,7 +61,7 @@ function renderMarkdown(markdown) {
   return html.join('')
 }
 
-function showEmpty(title = '尚无可展示的日报', message = '交易日上午生成后，此页面会自动展示市场全景、推荐股，以及可用的持仓建议。', isError = false) {
+function showEmpty(title = '尚无可展示的日报', message = '交易日 09:20 和 14:30 生成后，此页面会自动展示日报及盘中复盘。', isError = false) {
   statusCard.hidden = false
   statusCard.classList.toggle('error', isError)
   statusCard.querySelector('h2').textContent = title
@@ -77,7 +77,7 @@ function showReport(payload) {
   reportElement.innerHTML = renderMarkdown(payload.markdown)
   reportElement.hidden = false
   statusCard.hidden = true
-  updatedAt.textContent = `${payload.date} · 更新于 ${new Date(payload.updated_at).toLocaleString('zh-CN')}`
+  updatedAt.textContent = `${payload.label || payload.date} · 更新于 ${new Date(payload.updated_at).toLocaleString('zh-CN')}`
 }
 
 async function requestJson(url) {
@@ -86,7 +86,7 @@ async function requestJson(url) {
   return response.json()
 }
 
-async function loadIndex(preferredDate = '') {
+async function loadIndex(preferredId = '') {
   try {
     const index = await requestJson('/api/reports')
     reportDate.replaceChildren()
@@ -95,9 +95,9 @@ async function loadIndex(preferredDate = '') {
       reportDate.disabled = true
       showEmpty()
     } else {
-      index.reports.forEach(item => reportDate.add(new Option(item.date, item.date)))
+      index.reports.forEach(item => reportDate.add(new Option(item.label || item.date, item.id || item.date)))
       reportDate.disabled = false
-      const selected = preferredDate || index.reports[0].date
+      const selected = preferredId || index.reports[0].id || index.reports[0].date
       reportDate.value = selected
       showReport(await requestJson(`/api/reports/${encodeURIComponent(selected)}`))
     }
@@ -117,7 +117,7 @@ setInterval(() => loadIndex(reportDate.value), 30_000)
 const reportEvents = new EventSource('/api/events')
 reportEvents.addEventListener('report', event => {
   const payload = JSON.parse(event.data)
-  loadIndex(payload.date)
+  loadIndex(payload.id || payload.date)
 })
 reportEvents.addEventListener('open', () => { connectionState.textContent = '实时连接' })
 reportEvents.addEventListener('error', () => { connectionState.textContent = '自动刷新中' })

@@ -28,6 +28,16 @@ class ReportWebServerTests(unittest.TestCase):
             self.assertTrue(report["available"])
             self.assertEqual(report["markdown"], "# 新日报")
 
+    def test_lists_morning_and_afternoon_reports_separately(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(report_web, "REPORT_DIR", Path(directory)):
+            root = Path(directory)
+            (root / "2026-09-15-a-morning.md").write_text("# 日报1", encoding="utf-8")
+            (root / "2026-09-15-a-afternoon.md").write_text("# 日报2", encoding="utf-8")
+            reports = report_web.list_reports()
+            self.assertEqual([item["session"] for item in reports], ["afternoon", "morning"])
+            self.assertEqual(reports[0]["id"], "2026-09-15-a-afternoon")
+            self.assertIn("日报2", reports[0]["label"])
+
     def test_rejects_invalid_report_path(self):
         with self.assertRaises(ValueError):
             report_web.read_report("../portfolio.json")

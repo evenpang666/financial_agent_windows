@@ -8,3 +8,5 @@ data/reports/
 config/daily-push.json
 data/report-snapshots/
 data/research-reflections.json
+data/dsh-web.stdout.log
+data/dsh-web.stderr.log

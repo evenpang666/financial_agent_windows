@@ -70,6 +70,35 @@ function Get-TaskState([string]$TaskName) {
     return [string]$task.State
 }
 
+function Start-DshWebProcess([string]$CommandPath) {
+    $logDirectory = Join-Path $projectRoot 'data'
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    $stdoutLog = Join-Path $logDirectory 'dsh-web.stdout.log'
+    $stderrLog = Join-Path $logDirectory 'dsh-web.stderr.log'
+    $escapedPath = $CommandPath.Replace("'", "''")
+    $launchCommand = "& '$escapedPath' web"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launchCommand))
+    Write-Host "Launching DSH command: $CommandPath web"
+    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
+    ) -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
+    return $process
+}
+
+function Write-DshStartupLogs {
+    $stdoutLog = Join-Path $projectRoot 'data\dsh-web.stdout.log'
+    $stderrLog = Join-Path $projectRoot 'data\dsh-web.stderr.log'
+    foreach ($logPath in @($stdoutLog, $stderrLog)) {
+        if (Test-Path -LiteralPath $logPath) {
+            $lines = Get-Content -LiteralPath $logPath -Tail 30 -ErrorAction SilentlyContinue
+            if ($lines) {
+                Write-Host "--- $(Split-Path -Leaf $logPath) ---"
+                $lines | ForEach-Object { Write-Host $_ }
+            }
+        }
+    }
+}
+
 switch ($Action) {
     'EnableAgent' {
         if (-not (Test-Path -LiteralPath $pythonExe)) {
@@ -110,19 +139,30 @@ switch ($Action) {
             Write-Host 'DSH Web is already running.'
             break
         }
-        $dsh = Get-Command dsh -ErrorAction SilentlyContinue
+        $dsh = Get-Command dsh.cmd -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $dsh) {
+            $dsh = Get-Command dsh -ErrorAction SilentlyContinue
+        }
         if (-not $dsh) {
             throw 'dsh command was not found. Run install-and-start.ps1 once first.'
         }
-        Start-Process -FilePath $dsh.Source -ArgumentList @('web') -WorkingDirectory $projectRoot
+        $dshProcess = Start-DshWebProcess $dsh.Source
         foreach ($attempt in 1..30) {
             if (Test-PortListening 3080) {
                 Write-Host 'DSH Web is running.'
                 break
             }
+            if ($dshProcess.HasExited -and $attempt -ge 5) {
+                break
+            }
             Start-Sleep -Seconds 1
         }
         if (-not (Test-PortListening 3080)) {
+            if (-not $dshProcess.HasExited) {
+                Stop-Process -Id $dshProcess.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 250
+            }
+            Write-DshStartupLogs
             throw 'DSH Web did not start within 30 seconds.'
         }
     }

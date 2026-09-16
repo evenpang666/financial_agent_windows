@@ -428,9 +428,12 @@ class ControlPanel(tk.Tk):
         self.set_busy(False)
         self.status_text.set(output.splitlines()[-1] if output else "操作完成。")
         self.append_log("✓ 操作完成。")
-        self.refresh_status()
         if action == "Update":
-            messagebox.showinfo("更新完成", "代码、依赖与插件已更新，所有服务保持关闭。关闭并重新打开控制台后，将自动启用全部服务。")
+            messagebox.showinfo("更新完成", "代码、依赖与插件已更新。所有服务和日报任务现已关闭；请重新启动控制面板以恢复运行。点击“确定”后，本窗口将自动关闭。")
+            self.closing = True
+            self.destroy()
+            return
+        self.refresh_status()
 
     def action_failed(self, detail: str):
         self.set_busy(False, "操作失败")

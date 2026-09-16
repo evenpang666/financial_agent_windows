@@ -129,7 +129,7 @@ class ControlPanel(tk.Tk):
         tk.Label(info, text="安装与维护", bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
         tk.Label(info, textvariable=self.environment_text, bg=self.PANEL, fg=self.MUTED, anchor="w").pack(anchor="w", pady=(3, 0))
         self._button(maintenance, "安装 / 修复", "Secondary.TButton", lambda: self.confirm_action("Install", "安装中", "安装会停止当前服务，并安装除 Node.js、Python 外的全部依赖与插件。是否继续？")).pack(side="left", padx=5, pady=14)
-        self._button(maintenance, "更新项目", "Primary.TButton", lambda: self.confirm_action("Update", "更新中", "更新会停止全部服务，拉取最新代码并重装依赖。完成后不会自动启用服务。是否继续？")).pack(side="left", padx=(5, 16), pady=14)
+        self._button(maintenance, "更新项目", "Primary.TButton", lambda: self.confirm_action("Update", "更新中", "更新会停止全部服务、拉取最新代码、更新 .venv 中的 Python 依赖，并重新注册本地插件；不会更新 dsh 或 pnpm。完成后不会自动启用服务。是否继续？")).pack(side="left", padx=(5, 16), pady=14)
 
         log_header = tk.Frame(body, bg=self.BG)
         log_header.pack(fill="x", pady=(14, 6))

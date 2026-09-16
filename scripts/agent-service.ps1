@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('EnableAgent', 'DisableAgent', 'EnableDshWeb', 'DisableDshWeb', 'Status')]
+    [ValidateSet('EnableAgent', 'DisableAgent', 'EnableDshWeb', 'DisableDshWeb', 'Install', 'Update', 'Status')]
     [string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonExe = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $dataServer = Join-Path $projectRoot 'scripts\stock_data_server.py'
@@ -13,6 +15,8 @@ $pushScript = Join-Path $projectRoot 'scripts\daily_push.py'
 $pushConfig = Join-Path $projectRoot 'config\daily-push.json'
 $pushConfigExample = Join-Path $projectRoot 'config\daily-push.example.json'
 $taskInstaller = Join-Path $projectRoot 'scripts\install-daily-task.ps1'
+$componentInstaller = Join-Path $projectRoot 'scripts\install-components.ps1'
+$updater = Join-Path $projectRoot 'scripts\update-project.ps1'
 $dailyTask = 'DSH A-Share Pre-open Research'
 $reportTask = 'DSH A-Share Report Site'
 
@@ -111,7 +115,16 @@ switch ($Action) {
             throw 'dsh command was not found. Run install-and-start.ps1 once first.'
         }
         Start-Process -FilePath $dsh.Source -ArgumentList @('web') -WorkingDirectory $projectRoot
-        Write-Host 'Starting DSH Web...'
+        foreach ($attempt in 1..30) {
+            if (Test-PortListening 3080) {
+                Write-Host 'DSH Web 已启动。'
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
+        if (-not (Test-PortListening 3080)) {
+            throw 'DSH Web 未能在 30 秒内启动。'
+        }
     }
     'DisableDshWeb' {
         $processIds = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue |
@@ -127,13 +140,39 @@ switch ($Action) {
             Stop-ProjectPort 8765 $dataServer 'local stock-data service'
         }
     }
+    'Install' {
+        Set-TaskEnabled $dailyTask $false
+        Set-TaskEnabled $reportTask $false
+        & (Join-Path $projectRoot 'scripts\stop-services.ps1')
+        & $componentInstaller
+    }
+    'Update' {
+        & $updater
+    }
     'Status' {
+        $manifestPath = Join-Path $env:USERPROFILE '.dsh\profiles\web\package.json'
+        $pluginInstalled = $false
+        if (Test-Path -LiteralPath $manifestPath) {
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                $pluginInstalled = $null -ne $manifest.dependencies.'dsh-finance-agent'
+            } catch {
+                $pluginInstalled = $false
+            }
+        }
         [pscustomobject]@{
             agent_task = Get-TaskState $dailyTask
             report_task = Get-TaskState $reportTask
             data_service = Test-PortListening 8765
             report_site = Test-PortListening 8766
             dsh_web = Test-PortListening 3080
+            node_available = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
+            python_available = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+            git_available = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+            git_checkout = Test-Path -LiteralPath (Join-Path $projectRoot '.git')
+            venv_ready = Test-Path -LiteralPath $pythonExe
+            dsh_available = $null -ne (Get-Command dsh -ErrorAction SilentlyContinue)
+            plugin_installed = $pluginInstalled
         } | ConvertTo-Json -Compress
     }
 }

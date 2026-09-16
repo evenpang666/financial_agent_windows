@@ -9,6 +9,7 @@
   "candidate_limit": 5,
   "market": "a",
   "report_site_url": "http://127.0.0.1:8766",
+  "auto_open_report": true,
   "webhook_type": "generic",
   "webhook_url": ""
 }

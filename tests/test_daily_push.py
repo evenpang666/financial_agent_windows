@@ -24,6 +24,16 @@ class DailyPushTests(unittest.TestCase):
             config = daily_push.load_config(Path(directory) / "missing.json")
         self.assertEqual(config["schedules"], {"morning": "09:20", "afternoon": "14:30"})
 
+    def test_auto_open_report_is_enabled_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = daily_push.load_config(Path(directory) / "missing.json")
+        self.assertTrue(config["auto_open_report"])
+
+    def test_open_report_page_selects_generated_report(self):
+        with patch.object(daily_push.webbrowser, "open_new_tab", return_value=True) as open_tab:
+            daily_push.open_report_page("http://127.0.0.1:8766/", "2026-09-16-hk-afternoon")
+        open_tab.assert_called_once_with("http://127.0.0.1:8766/?report=2026-09-16-hk-afternoon")
+
     def test_next_scheduled_run_selects_afternoon(self):
         config = {"schedules": {"morning": "09:20", "afternoon": "14:30"}}
         delay, session = daily_push.next_scheduled_run(config, datetime(2026, 9, 15, 10, 0, tzinfo=daily_push.CHINA_TZ))
@@ -40,17 +50,19 @@ class DailyPushTests(unittest.TestCase):
         self.assertEqual(daily_push.webhook_payload("dingtalk", "x")["markdown"]["text"], "x")
 
     def test_run_once_archives_and_pushes(self):
-        config = {"enabled": True, "data_service_url": "http://test", "candidate_limit": 5, "webhook_type": "generic", "webhook_url": "http://hook"}
+        config = {"enabled": True, "data_service_url": "http://test", "candidate_limit": 5, "auto_open_report": True, "webhook_type": "generic", "webhook_url": "http://hook"}
         report = {"is_trading_day": True, "markdown": "# report"}
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(daily_push, "STATE_FILE", Path(directory) / "state.json"), \
              patch.object(daily_push, "REPORT_DIR", Path(directory) / "reports"), \
              patch.object(daily_push, "get_json", return_value=report), \
              patch.object(daily_push, "notify_report_site") as notify, \
+             patch.object(daily_push, "open_report_page") as open_page, \
              patch.object(daily_push, "post_webhook") as post:
             self.assertTrue(daily_push.run_once(config, force=True))
             post.assert_called_once_with("http://hook", "generic", "# report")
             notify.assert_called_once()
+            open_page.assert_called_once()
             self.assertTrue(any((Path(directory) / "reports").glob("*.md")))
 
     def test_morning_and_afternoon_have_independent_success_state(self):

@@ -183,6 +183,8 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 
 同一局域网的手机或电脑访问：`http://本机局域网IP:8766`。启动脚本会在终端中列出可用的局域网地址，例如 `http://192.168.1.20:8766`。网页支持最新日报、历史日报切换和手动刷新。
 
+日报生成成功后，主机会自动使用默认浏览器打开对应的日报1或日报2。若不希望自动弹出，可在 `config/daily-push.json` 中设置 `"auto_open_report": false`。
+
 如果其他设备无法访问，请确认两台设备连接同一局域网、Windows 网络类型为“专用网络”，并以管理员 PowerShell 运行：
 
 ```powershell
@@ -220,6 +222,12 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 .\.venv\Scripts\python.exe .\scripts\daily_push.py --once --session morning --force
 .\.venv\Scripts\python.exe .\scripts\daily_push.py --once --session afternoon --force
 ```
+
+### 7.4 双击更新项目
+
+双击项目根目录的 `update_agent.cmd` 即可执行 `git pull --ff-only` 获取最新代码。拉取成功后，脚本会停止并重启本项目服务、刷新 Python 依赖、重新注册日报计划任务。`config/daily-push.json`、持仓、历史日报和反思数据均不会被 Git 覆盖。
+
+若存在未提交的受版本控制文件修改，Git 会安全地拒绝可能造成覆盖的更新；根据窗口中的提示处理修改后重新双击即可。
 
 ## 8. 内置 Skills
 

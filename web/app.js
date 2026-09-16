@@ -4,6 +4,7 @@ const updatedAt = document.querySelector('#updatedAt')
 const connectionState = document.querySelector('#connectionState')
 const reportDate = document.querySelector('#reportDate')
 const refreshButton = document.querySelector('#refreshButton')
+const requestedReport = new URLSearchParams(window.location.search).get('report') || ''
 
 function escapeHtml(value) {
   return String(value)
@@ -111,7 +112,7 @@ async function loadIndex(preferredId = '') {
 
 reportDate.addEventListener('change', () => loadIndex(reportDate.value))
 refreshButton.addEventListener('click', () => loadIndex(reportDate.value))
-loadIndex()
+loadIndex(requestedReport)
 setInterval(() => loadIndex(reportDate.value), 30_000)
 
 const reportEvents = new EventSource('/api/events')

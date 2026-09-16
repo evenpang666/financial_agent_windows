@@ -8,10 +8,11 @@ import json
 import os
 import sys
 import time
+import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -35,6 +36,7 @@ def load_config(path: Path) -> dict:
         "candidate_limit": 5,
         "market": "a",
         "report_site_url": "http://127.0.0.1:8766",
+        "auto_open_report": True,
         "webhook_type": "generic",
         "webhook_url": "",
     }
@@ -88,6 +90,12 @@ def notify_report_site(base_url: str, report_id: str):
     with urlopen(request, timeout=5) as response:
         if response.status >= 300:
             raise RuntimeError(f"日报网页返回 HTTP {response.status}")
+
+
+def open_report_page(base_url: str, report_id: str):
+    report_url = f"{str(base_url).rstrip('/')}/?report={quote(report_id, safe='')}"
+    if not webbrowser.open_new_tab(report_url):
+        raise RuntimeError("系统未找到可用的默认浏览器。")
 
 
 def load_state() -> dict:
@@ -161,10 +169,17 @@ def run_once(config: dict, force: bool = False, session: str = "morning") -> boo
     report_id = f"{today}-{selected_market}-{session}"
     report_path = archive_report(report_id, markdown)
     try:
-        notify_report_site(str(config.get("report_site_url", "http://127.0.0.1:8766")), report_id)
+        report_site_url = str(config.get("report_site_url", "http://127.0.0.1:8766"))
+        notify_report_site(report_site_url, report_id)
         log(f"本地日报网页已收到{phase_name}更新通知。")
     except (HTTPError, URLError, OSError, RuntimeError) as exc:
         log(f"{phase_name}已归档，但网页即时通知失败：{exc}；页面下次刷新时仍会读取该日报。")
+    if config.get("auto_open_report", False):
+        try:
+            open_report_page(str(config.get("report_site_url", "http://127.0.0.1:8766")), report_id)
+            log(f"已在主机默认浏览器中打开{phase_name}。")
+        except (OSError, RuntimeError) as exc:
+            log(f"无法自动打开{phase_name}页面：{exc}")
     webhook_url = str(config.get("webhook_url", "")).strip()
     if webhook_url:
         post_webhook(webhook_url, str(config.get("webhook_type", "generic")), markdown)

@@ -16,7 +16,10 @@ function Require-Command([string]$Name, [string]$Message) {
 }
 
 function Find-DshCommand {
-    $command = Get-Command dsh -ErrorAction SilentlyContinue
+    $command = Get-Command dsh.cmd -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $command) {
+        $command = Get-Command dsh -ErrorAction SilentlyContinue
+    }
     if ($command) {
         return $command.Source
     }
@@ -37,10 +40,21 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Set-Location $projectRoot
-Write-Host 'Installing or updating dsh and pnpm...'
-& npm install -g @deepseek-ai/dsh pnpm
-if ($LASTEXITCODE -ne 0) {
-    throw "npm dependency installation failed with exit code $LASTEXITCODE."
+$missingGlobalPackages = @()
+if (-not (Find-DshCommand)) {
+    $missingGlobalPackages += '@deepseek-ai/dsh'
+}
+if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+    $missingGlobalPackages += 'pnpm'
+}
+if ($missingGlobalPackages.Count -gt 0) {
+    Write-Host "Installing missing global packages: $($missingGlobalPackages -join ', ')..."
+    & npm install -g @missingGlobalPackages
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm dependency installation failed with exit code $LASTEXITCODE."
+    }
+} else {
+    Write-Host 'dsh and pnpm are already installed; leaving them unchanged.'
 }
 
 $dshCommand = Find-DshCommand

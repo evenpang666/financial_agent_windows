@@ -30,82 +30,41 @@ node --version
 python --version
 ```
 
-## 3. 一键安装与启动（Windows 推荐）
+## 3. 启动与使用（Windows）
 
-桌面上的 `启动财务研究智能体.cmd` 可以直接双击运行。首次运行会自动：
+先安装 Node.js 22 LTS 和 Python 3.11+；其余组件由启动器自动处理。日常使用有两种等价方式。
 
-- 安装 `dsh` 与 `pnpm`；
-- 创建 `.venv` 并安装 Python 依赖；
-- 以本地目录注册 `dsh-finance-agent`；
-- 在独立窗口启动本地数据服务，并启动 `dsh web`。
-- 注册每日 09:20 日报1、14:30 日报2任务和登录时启动的本地日报网页；日报2会对照日报1并记录反思。
+### 方式一：控制台简易启动（推荐）
 
-已完成安装时，双击启动器会跳过安装步骤，直接启动本地数据服务和 `dsh web`。
+双击项目根目录的 `control_panel.cmd`。可见命令行会依次检查 Node.js、Python、dsh、pnpm、`.venv`、Python 依赖和本地插件；缺少的组件会显示安装进度。准备完成后，启动器会使用 `.venv\Scripts\pythonw.exe` 打开控制面板。
 
-如需日常使用，推荐双击 `control_panel.cmd` 打开控制台。控制台启动后会静默启用日报智能体、数据服务、日报页面和 DSH Web，但不会自动弹出网页；可点击“打开 DSH Web”或“打开日报”随时回到对应页面，也可以最小化到后台运行。关闭控制台窗口时会一并关闭 DSH Web 和日报智能体相关服务。控制台会显示各服务以及当前安装或更新操作的实时状态；下方运行日志会逐行显示环境检测、Git、npm、pip、插件安装和服务启停命令的执行进度。
+控制面板会静默启动日报智能体、数据服务、日报页面和 DSH Web，但不会自动打开浏览器。需要检索时点击“打开 DSH Web”；需要查看归档日报时点击“打开日报”。控制面板最小化后服务会继续运行；关闭控制面板会关闭相关服务。
 
-从零开始的用户只需先自行安装 Node.js 与 Python 3.11 或更高版本，随后打开控制台并点击“安装 / 修复”。程序会安装 dsh、pnpm、Python 虚拟环境、项目依赖和本地插件，但不会启用任何服务。使用“更新项目”还需要系统已安装 Git，且当前目录是 Git 仓库。
+### 方式二：PowerShell 备选命令
 
-也可以在项目根目录手动运行相同的启动脚本：
+在项目根目录打开 PowerShell，执行：
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install-and-start.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-control-panel.ps1
 ```
 
-首次启动后，浏览器打开终端显示的地址（通常是 `http://127.0.0.1:3080`），在“设置 → 模型”中填写 DeepSeek API Key。API Key 不要写入本项目文件或提交到 Git。
+该命令与双击 `control_panel.cmd` 使用完全相同的检查、安装与启动流程，适合快捷方式失效或需要保留命令行进度时使用。
 
-## 4. 手动安装（可选）
+### 仅打开 DSH 对话页面
 
-如果不使用一键脚本，请在项目根目录以普通 PowerShell 运行：
-
-```powershell
-npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add .\dsh-finance-agent
-```
-
-`dsh-finance-agent` 是本项目内的本地包，未发布到 npm 公共仓库；必须以路径形式添加。不要运行 `dsh plugin --profile web add dsh-finance-agent`，否则 dsh 会在 npm 中查找该包并返回 404。
-
-该插件默认调用 `http://127.0.0.1:8765` 的本地数据服务，并自动注册本包内的 7 个 Skills。
-
-## 5. 启动本地数据服务（手动方式）
-
-第一次创建 Python 虚拟环境并安装依赖：
-
-```powershell
-# 先切换到包含 requirements.txt 的项目根目录
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-若 PowerShell 阻止激活脚本，只对当前窗口临时放开：
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-```
-
-启动服务：
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\stock_data_server.py
-```
-
-看到 `Serving on http://127.0.0.1:8765` 后，另开一个 PowerShell 再运行：
+不使用本项目的日报、行情服务或控制面板时，也可以在任意工作目录的 PowerShell 中直接运行：
 
 ```powershell
 dsh web
 ```
 
-验证服务：
+该命令只启动 DSH Web 对话页面，并会按 DSH 默认行为打开浏览器；不会启动日报任务、本地数据服务或日报网页。若此前已注册本项目插件，它仍会作为 DSH 的可选工具存在，但普通对话不调用这些工具即可独立使用。
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/health
-```
+首次启动后，点击“打开 DSH Web”，在“设置 → 模型”中填写 DeepSeek API Key。API Key 不要写入本项目文件或提交到 Git。
 
-## 6. 本包新增的工具
+“安装 / 修复”按钮会停止服务并关闭当前控制面板，然后重新执行上述启动检查；缺失或失效的 dsh、pnpm、虚拟环境、Python 依赖和本地插件会自动修复，完成后自动重新打开控制面板。使用“更新项目”还需要系统已安装 Git，且当前目录是 Git 仓库。
+
+## 4. 本包新增的工具
 
 | 工具名 | 用途 | 关键限制 |
 |---|---|---|
@@ -157,11 +116,11 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 
 持仓清单仅用于研究上下文，默认保存于本地 `data/portfolio.json`，不会包含券商登录信息或交易凭证。该文件已加入忽略列表；不要把它上传、共享或提交到版本库。
 
-## 7. 每日双时点推送与反思配置
+## 5. 每日双时点推送与反思配置
 
-### 7.1 使用流程
+### 5.1 使用流程
 
-1. 双击 `启动财务研究智能体.cmd`，等待 DSH Web 打开。启动器同时启动本地数据服务和日报网页。
+1. 双击 `control_panel.cmd`，等待控制面板显示日报任务、数据服务、日报页面和 DSH Web 为“运行中”。如需对话检索，点击“打开 DSH Web”；启动时不会自动弹出网页。
 2. 在 DSH Web 对话框中发送持仓。例如：
 
 ```text
@@ -179,11 +138,11 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 7. 快照保存到 `data/report-snapshots/`，累计反思保存到 `data/research-reflections.json`。后续候选筛选和单股分析会读取最近反思，以 -10 至 +5 个百分点的有限调整校准方向分，同时保留原始分、样本数和调整值。
 8. 网页日报保存为 `data/reports/YYYY-MM-DD-a-morning.md` 与 `YYYY-MM-DD-a-afternoon.md`（港股使用 `hk`），可在同一日期下分别选择日报1和日报2。
 
-### 7.2 在网页查看日报
+### 5.2 在网页查看日报
 
 本机访问：`http://127.0.0.1:8766`
 
-同一局域网的手机或电脑访问：`http://本机局域网IP:8766`。启动脚本会在终端中列出可用的局域网地址，例如 `http://192.168.1.20:8766`。网页支持最新日报、历史日报切换和手动刷新。
+同一局域网的手机或电脑访问：`http://本机局域网IP:8766`。控制面板“网页入口”区域会显示当前主机的实际局域网地址，例如 `http://192.168.1.20:8766`。网页支持最新日报、历史日报切换和手动刷新。
 
 日报生成成功后，主机会自动使用默认浏览器打开对应的日报1或日报2。若不希望自动弹出，可在 `config/daily-push.json` 中设置 `"auto_open_report": false`。
 
@@ -195,11 +154,11 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 
 该命令只允许专用网络的本地子网访问 TCP 8766 端口。日报可能包含持仓信息，不建议在公共 Wi-Fi 或不可信局域网开放。
 
-### 7.3 调度与 Webhook
+### 5.3 调度与 Webhook
 
-首次运行 `install-and-start.ps1` 会将 `config/daily-push.example.json` 复制为不纳入 Git 的 `config/daily-push.json`，并注册 Windows 计划任务 `DSH A-Share Pre-open Research`。同一任务包含北京时间 09:20 与 14:30 两个触发器；数据服务会再次核验交易日，因此周末和休市日不会推送。若系统不允许注册任务，启动器会自动退回为当前登录会话内的后台调度器。
+首次由控制面板启动日报智能体时，会将 `config/daily-push.example.json` 复制为不纳入 Git 的 `config/daily-push.json`，并注册 Windows 计划任务 `DSH A-Share Pre-open Research`。同一任务包含北京时间 09:20 与 14:30 两个触发器；数据服务会再次核验交易日，因此周末和休市日不会推送。若系统不允许注册任务，启动器会自动退回为当前登录会话内的后台调度器。
 
-启动器还会注册 `DSH A-Share Report Site` 登录任务，使日报网页在用户登录 Windows 后自动运行。
+控制面板还会注册 `DSH A-Share Report Site` 登录任务，使日报网页在用户登录 Windows 后自动运行。
 
 默认情况下，日报1和日报2使用不同文件归档。如需远程推送，在配置中填写 Webhook：
 
@@ -225,13 +184,13 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 .\.venv\Scripts\python.exe .\scripts\daily_push.py --once --session afternoon --force
 ```
 
-### 7.4 双击更新项目
+### 5.4 更新项目
 
 可以点击控制台中的“更新项目”，或双击项目根目录的 `update_agent.cmd`。更新会先停止全部项目服务和日报任务，再执行 `git pull --ff-only`，更新 `.venv` 中的 Python 依赖，并重新注册本地 `dsh-finance-agent` 插件；不会更新 dsh 或 pnpm。更新完成后所有服务保持关闭；关闭并重新打开控制台后会自动启用全部服务。`config/daily-push.json`、持仓、历史日报和反思数据均不会被 Git 覆盖。
 
 若存在未提交的受版本控制文件修改，Git 会安全地拒绝可能造成覆盖的更新；根据窗口中的提示处理修改后重新双击即可。
 
-## 8. 内置 Skills
+## 6. 内置 Skills
 
 `dsh-finance-agent/skills/` 中的文件随插件自动加载：
 
@@ -251,7 +210,7 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 
 单股分析同时返回 `historical_reflections` 与 `market_context`，逐项标记国际事件、国内政策、大盘宽度和社交/关注数据的覆盖状态、窗口、截止日期及缺失原因，防止数据源失败时被误读为“中性”。`related_large_enterprises` 会识别目标公司的东方财富行业，从行业成分中按总市值选取最多 3 家同行龙头，并查询其近 30 日巨潮公告；这些公告只作为行业背景与风险核验，不直接改变个股评分。
 
-## 9. 推荐提问方式
+## 7. 推荐提问方式
 
 ```text
 请研究 600519，数据截止到最近一个可得交易日。
@@ -265,18 +224,18 @@ A 股与港股使用不同交易日历；港股交易日判断使用恒生指数
 百分比不得解释为仓位或涨跌概率，不要作收益承诺。
 ```
 
-## 10. 数据时效和责任边界
+## 8. 数据时效和责任边界
 
 - 工具的 `as_of` 字段是唯一可依赖的数据时间；没有该字段就不要把数据说成实时。
 - 行情、复权、停牌、除权除息、公告归档都可能影响结论；需要交易用途时请从权威/授权数据源复核。
 - 历史回测不代表未来结果。回测必须包含手续费、滑点、涨跌停、停牌与样本外验证。
 - 本包输出的是程序化买卖建议和证据倾向分，不是持牌证券投资咨询；百分比不是仓位或收益概率，使用者自行作出并承担投资决策。
 
-## 11. 常见问题
+## 9. 常见问题
 
-**`dsh` 不是内部或外部命令**：关闭并重开 PowerShell；确认 Node.js 已加入 PATH，再重新执行 `npm install -g @deepseek-ai/dsh pnpm`。
+**`dsh` 不是内部或外部命令**：关闭并重开 PowerShell；确认 Node.js 已加入 PATH，然后重新双击 `control_panel.cmd` 或运行“方式二”的备选命令。启动引导会自动安装缺失的 dsh。
 
-**工具提示无法连接数据服务**：先运行 `Invoke-RestMethod http://127.0.0.1:8765/health`；确认 Python 服务窗口仍在运行且端口 8765 未被占用。
+**工具提示无法连接数据服务**：点击控制面板“刷新”检查服务状态；若数据服务未运行，关闭并重新打开控制面板。也可运行 `Invoke-RestMethod http://127.0.0.1:8765/health` 排查端口占用。
 
 **AKShare 查询失败或字段变化**：升级依赖 `pip install --upgrade akshare`。若仍不稳定，应在 `scripts/stock_data_server.py` 的 Provider 层替换为 Tushare 或企业数据源；不要让模型以旧缓存补写数据。
 

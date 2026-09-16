@@ -18,7 +18,10 @@ from tkinter import messagebox, ttk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SERVICE_SCRIPT = PROJECT_ROOT / "scripts" / "agent-service.ps1"
+VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+CONTROL_PANEL_LAUNCHER = PROJECT_ROOT / "control_panel.cmd"
 WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+WINDOWS_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -112,8 +115,14 @@ class ControlPanel(tk.Tk):
         self._build_styles()
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.close_panel)
-        self.append_log("控制台已启动，正在静默启用日报智能体与 DSH Web。")
-        self.after(150, self.start_all_services)
+        if VENV_PYTHON.exists():
+            self.append_log("控制台已启动，正在静默启用日报智能体与 DSH Web。")
+            self.after(150, self.start_all_services)
+        else:
+            self.status_text.set("首次使用：未检测到虚拟环境，请点击“安装 / 修复”。")
+            self.operation_text.set("等待安装")
+            self.append_log("未检测到 .venv；控制台已就绪。请点击“安装 / 修复”完成首次安装。")
+            self.after(150, self.refresh_status)
         self.after(6000, self.periodic_refresh)
 
     def _build_styles(self):
@@ -166,8 +175,8 @@ class ControlPanel(tk.Tk):
         info.pack(side="left", fill="both", expand=True, padx=18, pady=13)
         tk.Label(info, text="安装与维护", bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
         tk.Label(info, textvariable=self.environment_text, bg=self.PANEL, fg=self.MUTED, anchor="w").pack(anchor="w", pady=(3, 0))
-        self._button(maintenance, "安装 / 修复", "Secondary.TButton", lambda: self.confirm_action("Install", "安装中", "安装会停止当前服务，并安装除 Node.js、Python 外的全部依赖与插件。是否继续？")).pack(side="left", padx=5, pady=14)
-        self._button(maintenance, "更新项目", "Primary.TButton", lambda: self.confirm_action("Update", "更新中", "更新会停止全部服务、拉取最新代码、更新 .venv 中的 Python 依赖，并重新注册本地插件；不会更新 dsh 或 pnpm。完成后不会自动启用服务。是否继续？")).pack(side="left", padx=(5, 16), pady=14)
+        self._button(maintenance, "安装 / 修复", "Secondary.TButton", self.confirm_restart_install).pack(side="left", padx=5, pady=14)
+        self._button(maintenance, "更新项目", "Primary.TButton", lambda: self.confirm_maintenance("Update", "更新中", "更新会自动关闭所有服务，随后拉取最新代码、更新 .venv 中的 Python 依赖，并重新注册本地插件；不会更新 dsh 或 pnpm。完成后不会自动启用服务。是否继续？")).pack(side="left", padx=(5, 16), pady=14)
 
         log_header = tk.Frame(body, bg=self.BG)
         log_header.pack(fill="x", pady=(14, 6))
@@ -193,9 +202,14 @@ class ControlPanel(tk.Tk):
         self.action_buttons.append(button)
         return button
 
-    def confirm_action(self, action: str, state_text: str, prompt: str):
+    def confirm_maintenance(self, action: str, state_text: str, prompt: str):
         if messagebox.askyesno("请确认", prompt):
-            self.run_action(action, state_text)
+            self.run_maintenance(action, state_text)
+
+    def confirm_restart_install(self):
+        prompt = "控制面板将停止全部服务并退出，然后在命令行窗口中重新检测和安装缺失组件。完成后会自动重新打开控制面板。是否继续？"
+        if messagebox.askyesno("安装 / 修复", prompt):
+            self.restart_through_launcher()
 
     def set_busy(self, busy: bool, operation: str = "空闲"):
         self.busy = busy
@@ -205,6 +219,10 @@ class ControlPanel(tk.Tk):
 
     def start_all_services(self):
         if self.busy or self.starting_services or self.closing:
+            return
+        if not VENV_PYTHON.exists():
+            self.status_text.set("未检测到虚拟环境，请点击“安装 / 修复”。")
+            self.operation_text.set("等待安装")
             return
         self.starting_services = True
         self.operation_text.set("后台启动中")
@@ -289,6 +307,74 @@ class ControlPanel(tk.Tk):
             if errors:
                 self.after(0, lambda: self.append_log("✕ 部分服务关闭失败，控制台仍将退出：" + "；".join(errors)))
             self.after(200, self.destroy)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def restart_through_launcher(self):
+        if self.busy or self.closing:
+            return
+        self.closing = True
+        self.set_busy(True, "准备安装")
+        self.status_text.set("正在停止服务并重新启动安装检查…")
+        self.append_log("安装 / 修复：停止全部服务后，将在命令行窗口中重新执行启动检查。")
+
+        def worker():
+            if self.startup_thread and self.startup_thread.is_alive():
+                self.startup_thread.join(timeout=45)
+            errors = []
+            for action in ("DisableDshWeb", "DisableAgent"):
+                try:
+                    powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                except Exception as exc:
+                    errors.append(str(exc))
+            if errors:
+                self.after(0, lambda: self.install_restart_failed("；".join(errors)))
+                return
+            try:
+                subprocess.Popen(
+                    ["cmd.exe", "/d", "/c", "call", str(CONTROL_PANEL_LAUNCHER)],
+                    cwd=PROJECT_ROOT,
+                    creationflags=WINDOWS_NEW_CONSOLE,
+                )
+            except Exception as exc:
+                self.after(0, lambda detail=str(exc): self.install_restart_failed(detail))
+                return
+            self.after(0, self.destroy)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def install_restart_failed(self, detail: str):
+        self.closing = False
+        self.set_busy(False, "启动失败")
+        self.status_text.set("无法重新启动安装流程，请查看错误信息。")
+        self.append_log("✕ 无法重新启动安装流程：" + detail)
+        messagebox.showerror("安装 / 修复启动失败", detail)
+
+    def run_maintenance(self, action: str, operation: str):
+        """Stop all managed services before an installation or an update."""
+        if self.busy:
+            return
+        self.set_busy(True, operation)
+        self.status_text.set(f"{operation}：正在关闭全部服务…")
+        self.append_log(f"> {operation}前置步骤：关闭 DSH Web、日报任务与本地服务")
+
+        def worker():
+            try:
+                if self.startup_thread and self.startup_thread.is_alive():
+                    self.after(0, lambda: self.append_log("等待自动启动流程结束后再安全停止服务…"))
+                    self.startup_thread.join(timeout=45)
+                    if self.startup_thread.is_alive():
+                        raise RuntimeError("自动启动流程超过 45 秒仍未结束。请关闭控制台后重新打开，再执行维护操作。")
+                for stop_action in ("DisableDshWeb", "DisableAgent"):
+                    self.after(0, lambda value=stop_action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
+                    powershell(stop_action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                self.after(0, lambda: self.append_log("✓ 全部服务已停止，开始后续维护操作。"))
+                self.after(0, lambda: self.status_text.set(f"{operation}，请稍候…"))
+                self.after(0, lambda: self.append_log(f"> powershell.exe agent-service.ps1 -Action {action}"))
+                output = powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                self.after(0, lambda: self.action_done(action, output))
+            except Exception as exc:
+                self.after(0, lambda detail=str(exc): self.action_failed(detail))
 
         threading.Thread(target=worker, daemon=True).start()
 

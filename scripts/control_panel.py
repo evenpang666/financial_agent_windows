@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -70,16 +71,17 @@ class ControlPanel(tk.Tk):
         self.status_text = tk.StringVar(value="正在读取运行状态…")
         self.operation_text = tk.StringVar(value="空闲")
         self.environment_text = tk.StringVar(value="环境检测中…")
-        self.minimize_after_enable = tk.BooleanVar(value=True)
         self.service_vars = {name: tk.StringVar(value="检测中") for name in ("日报任务", "数据服务", "日报页面", "DSH Web")}
         self.action_buttons: list[ttk.Button] = []
         self.busy = False
+        self.closing = False
         self.last_status_summary = ""
         self.last_status_error = ""
         self._build_styles()
         self._build()
-        self.append_log("控制台已启动，准备检测本机环境与服务状态。")
-        self.refresh_status()
+        self.protocol("WM_DELETE_WINDOW", self.close_panel)
+        self.append_log("控制台已启动，正在静默启用日报智能体与 DSH Web。")
+        self.after(150, self.start_all_services)
         self.after(6000, self.periodic_refresh)
 
     def _build_styles(self):
@@ -118,9 +120,12 @@ class ControlPanel(tk.Tk):
 
         controls = tk.Frame(body, bg=self.PANEL, highlightbackground=self.LINE, highlightthickness=1)
         controls.pack(fill="x", pady=14)
-        self._service_row(controls, 0, "日报智能体", "09:20 / 14:30 后台生成日报", "启用智能体", "关闭", "EnableAgent", "DisableAgent")
-        tk.Frame(controls, bg=self.LINE, height=1).grid(row=1, column=0, columnspan=5, sticky="ew", padx=16)
-        self._service_row(controls, 2, "DSH Web", "独立启停对话检索页面", "启用 Web", "关闭", "EnableDshWeb", "DisableDshWeb")
+        access_info = tk.Frame(controls, bg=self.PANEL)
+        access_info.pack(side="left", fill="both", expand=True, padx=18, pady=13)
+        tk.Label(access_info, text="网页入口", bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
+        tk.Label(access_info, text="服务随控制台启停；关闭网页后可在这里重新打开", bg=self.PANEL, fg=self.MUTED).pack(anchor="w", pady=(3, 0))
+        self._button(controls, "打开 DSH Web", "Primary.TButton", lambda: self.open_url("http://127.0.0.1:3080", "DSH Web")).pack(side="left", padx=5, pady=14)
+        self._button(controls, "打开日报", "Secondary.TButton", lambda: self.open_url("http://127.0.0.1:8766", "日报页面")).pack(side="left", padx=(5, 16), pady=14)
 
         maintenance = tk.Frame(body, bg=self.PANEL, highlightbackground=self.LINE, highlightthickness=1)
         maintenance.pack(fill="x")
@@ -150,17 +155,6 @@ class ControlPanel(tk.Tk):
         ttk.Button(footer, text="刷新", style="Secondary.TButton", command=self.refresh_status).pack(side="right", padx=(6, 20), pady=10)
         ttk.Button(footer, text="最小化", style="Secondary.TButton", command=self.iconify).pack(side="right", padx=6, pady=10)
 
-    def _service_row(self, parent, row, name, description, start_text, stop_text, start_action, stop_action):
-        tk.Label(parent, text=name, bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold"), width=12, anchor="w").grid(row=row, column=0, padx=(18, 4), pady=13, sticky="w")
-        tk.Label(parent, text=description, bg=self.PANEL, fg=self.MUTED, anchor="w").grid(row=row, column=1, padx=4, sticky="ew")
-        parent.grid_columnconfigure(1, weight=1)
-        if start_action == "EnableAgent":
-            tk.Checkbutton(parent, text="启用后最小化", variable=self.minimize_after_enable, bg=self.PANEL, fg=self.MUTED, activebackground=self.PANEL, activeforeground=self.TEXT, selectcolor=self.PANEL_ALT, highlightthickness=0).grid(row=row, column=2, padx=8)
-        else:
-            tk.Label(parent, text="", bg=self.PANEL).grid(row=row, column=2, padx=8)
-        self._button(parent, start_text, "Primary.TButton", lambda: self.run_action(start_action, "启动中")).grid(row=row, column=3, padx=5, pady=10)
-        self._button(parent, stop_text, "Secondary.TButton", lambda: self.run_action(stop_action, "关闭中")).grid(row=row, column=4, padx=(5, 16), pady=10)
-
     def _button(self, parent, text, style, command):
         button = ttk.Button(parent, text=text, style=style, command=command)
         self.action_buttons.append(button)
@@ -175,6 +169,67 @@ class ControlPanel(tk.Tk):
         self.operation_text.set(operation)
         for button in self.action_buttons:
             button.configure(state="disabled" if busy else "normal")
+
+    def start_all_services(self):
+        if self.busy or self.closing:
+            return
+        self.set_busy(True, "启动服务")
+        self.status_text.set("正在启用日报智能体与 DSH Web…")
+
+        def worker():
+            try:
+                outputs = []
+                for action in ("EnableAgent", "EnableDshWeb"):
+                    self.after(0, lambda value=action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
+                    outputs.append(powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value))))
+                self.after(0, lambda: self.services_started("\n".join(outputs)))
+            except Exception as exc:
+                self.after(0, lambda detail=str(exc): self.startup_failed(detail))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def services_started(self, output: str):
+        self.set_busy(False)
+        self.status_text.set(output.splitlines()[-1] if output else "全部服务已启动。")
+        self.append_log("✓ 日报智能体与 DSH Web 已在后台启动；未自动打开网页。")
+        self.refresh_status()
+
+    def startup_failed(self, detail: str):
+        self.set_busy(False, "启动未完成")
+        self.status_text.set("服务未能全部启动，请查看日志或先执行安装 / 修复。")
+        self.append_log("✕ 自动启动未完成：" + detail)
+        self.operation_text.set("空闲")
+        self.refresh_status()
+
+    def open_url(self, url: str, label: str):
+        self.append_log(f"打开 {label}：{url}")
+        if not webbrowser.open_new_tab(url):
+            messagebox.showerror("无法打开网页", f"未能调用默认浏览器。请手动访问：\n{url}")
+
+    def close_panel(self):
+        if self.closing:
+            return
+        if self.busy:
+            messagebox.showinfo("操作进行中", "请等待当前安装、更新或服务操作完成后再关闭控制台。")
+            return
+        self.closing = True
+        self.set_busy(True, "正在退出")
+        self.status_text.set("正在关闭 DSH Web 与日报智能体服务…")
+        self.append_log("控制台即将关闭，正在停止全部相关服务…")
+
+        def worker():
+            errors = []
+            for action in ("DisableDshWeb", "DisableAgent"):
+                try:
+                    self.after(0, lambda value=action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
+                    powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                except Exception as exc:
+                    errors.append(str(exc))
+            if errors:
+                self.after(0, lambda: self.append_log("✕ 部分服务关闭失败，控制台仍将退出：" + "；".join(errors)))
+            self.after(200, self.destroy)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def run_action(self, action: str, operation: str):
         if self.busy:
@@ -198,9 +253,7 @@ class ControlPanel(tk.Tk):
         self.append_log("✓ 操作完成。")
         self.refresh_status()
         if action == "Update":
-            messagebox.showinfo("更新完成", "代码、依赖与插件已更新，所有服务保持关闭。若控制台界面也有更新，请关闭后重新打开本程序。")
-        if action == "EnableAgent" and self.minimize_after_enable.get():
-            self.after(800, self.iconify)
+            messagebox.showinfo("更新完成", "代码、依赖与插件已更新，所有服务保持关闭。关闭并重新打开控制台后，将自动启用全部服务。")
 
     def action_failed(self, detail: str):
         self.set_busy(False, "操作失败")
@@ -211,7 +264,7 @@ class ControlPanel(tk.Tk):
         self.refresh_status()
 
     def refresh_status(self, verbose: bool = True):
-        if self.busy:
+        if self.busy or self.closing:
             return
         if verbose:
             self.append_log("检测中：计划任务、服务端口、Node.js、Python、Git、虚拟环境与 DSH 插件…")
@@ -227,16 +280,22 @@ class ControlPanel(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def periodic_refresh(self):
+        if self.closing:
+            return
         self.refresh_status(False)
         self.after(6000, self.periodic_refresh)
 
     def status_failed(self, detail: str):
+        if self.closing:
+            return
         self.status_text.set(f"无法读取状态：{detail}")
         if detail != self.last_status_error:
             self.append_log("✕ 状态检测失败：" + detail)
             self.last_status_error = detail
 
     def show_status(self, payload: dict, verbose: bool = False):
+        if self.closing:
+            return
         self.last_status_error = ""
         agent_on = payload.get("agent_task") in {"Ready", "Running"}
         values = {

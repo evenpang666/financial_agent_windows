@@ -76,9 +76,9 @@ function Start-DshWebProcess([string]$CommandPath) {
     $stdoutLog = Join-Path $logDirectory 'dsh-web.stdout.log'
     $stderrLog = Join-Path $logDirectory 'dsh-web.stderr.log'
     $escapedPath = $CommandPath.Replace("'", "''")
-    $launchCommand = "& '$escapedPath' web"
+    $launchCommand = "& '$escapedPath' web --no-open"
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launchCommand))
-    Write-Host "Launching DSH command: $CommandPath web"
+    Write-Host "Launching DSH command: $CommandPath web --no-open"
     $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
         '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
     ) -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru

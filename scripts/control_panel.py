@@ -74,6 +74,8 @@ class ControlPanel(tk.Tk):
         self.service_vars = {name: tk.StringVar(value="检测中") for name in ("日报任务", "数据服务", "日报页面", "DSH Web")}
         self.action_buttons: list[ttk.Button] = []
         self.busy = False
+        self.starting_services = False
+        self.startup_thread: threading.Thread | None = None
         self.closing = False
         self.last_status_summary = ""
         self.last_status_error = ""
@@ -124,7 +126,7 @@ class ControlPanel(tk.Tk):
         access_info.pack(side="left", fill="both", expand=True, padx=18, pady=13)
         tk.Label(access_info, text="网页入口", bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
         tk.Label(access_info, text="服务随控制台启停；关闭网页后可在这里重新打开", bg=self.PANEL, fg=self.MUTED).pack(anchor="w", pady=(3, 0))
-        self._button(controls, "打开 DSH Web", "Primary.TButton", lambda: self.open_url("http://127.0.0.1:3080", "DSH Web")).pack(side="left", padx=5, pady=14)
+        self._button(controls, "打开 DSH Web", "Primary.TButton", self.open_dsh_web).pack(side="left", padx=5, pady=14)
         self._button(controls, "打开日报", "Secondary.TButton", lambda: self.open_url("http://127.0.0.1:8766", "日报页面")).pack(side="left", padx=(5, 16), pady=14)
 
         maintenance = tk.Frame(body, bg=self.PANEL, highlightbackground=self.LINE, highlightthickness=1)
@@ -171,31 +173,43 @@ class ControlPanel(tk.Tk):
             button.configure(state="disabled" if busy else "normal")
 
     def start_all_services(self):
-        if self.busy or self.closing:
+        if self.busy or self.starting_services or self.closing:
             return
-        self.set_busy(True, "启动服务")
+        self.starting_services = True
+        self.operation_text.set("后台启动中")
         self.status_text.set("正在启用日报智能体与 DSH Web…")
 
         def worker():
             try:
                 outputs = []
                 for action in ("EnableAgent", "EnableDshWeb"):
+                    if self.closing:
+                        break
                     self.after(0, lambda value=action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
                     outputs.append(powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value))))
-                self.after(0, lambda: self.services_started("\n".join(outputs)))
+                if not self.closing:
+                    self.after(0, lambda: self.services_started("\n".join(outputs)))
             except Exception as exc:
-                self.after(0, lambda detail=str(exc): self.startup_failed(detail))
+                if not self.closing:
+                    self.after(0, lambda detail=str(exc): self.startup_failed(detail))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self.startup_thread = threading.Thread(target=worker, daemon=True)
+        self.startup_thread.start()
 
     def services_started(self, output: str):
-        self.set_busy(False)
+        if self.closing:
+            return
+        self.starting_services = False
+        self.operation_text.set("空闲")
         self.status_text.set(output.splitlines()[-1] if output else "全部服务已启动。")
         self.append_log("✓ 日报智能体与 DSH Web 已在后台启动；未自动打开网页。")
         self.refresh_status()
 
     def startup_failed(self, detail: str):
-        self.set_busy(False, "启动未完成")
+        if self.closing:
+            return
+        self.starting_services = False
+        self.operation_text.set("启动未完成")
         self.status_text.set("服务未能全部启动，请查看日志或先执行安装 / 修复。")
         self.append_log("✕ 自动启动未完成：" + detail)
         self.operation_text.set("空闲")
@@ -205,6 +219,19 @@ class ControlPanel(tk.Tk):
         self.append_log(f"打开 {label}：{url}")
         if not webbrowser.open_new_tab(url):
             messagebox.showerror("无法打开网页", f"未能调用默认浏览器。请手动访问：\n{url}")
+
+    def open_dsh_web(self):
+        log_path = PROJECT_ROOT / "data" / "dsh-web.stdout.log"
+        url = "http://127.0.0.1:3080"
+        try:
+            content = ANSI_ESCAPE.sub("", log_path.read_text(encoding="utf-8", errors="replace"))
+            candidates = re.findall(r'https?://[^\s<>"\']+', content)
+            authenticated = [candidate.rstrip(".,);]") for candidate in candidates if ":3080" in candidate]
+            if authenticated:
+                url = authenticated[-1]
+        except OSError:
+            pass
+        self.open_url(url, "DSH Web")
 
     def close_panel(self):
         if self.closing:
@@ -216,8 +243,11 @@ class ControlPanel(tk.Tk):
         self.set_busy(True, "正在退出")
         self.status_text.set("正在关闭 DSH Web 与日报智能体服务…")
         self.append_log("控制台即将关闭，正在停止全部相关服务…")
+        self.withdraw()
 
         def worker():
+            if self.startup_thread and self.startup_thread.is_alive():
+                self.startup_thread.join(timeout=45)
             errors = []
             for action in ("DisableDshWeb", "DisableAgent"):
                 try:
@@ -232,6 +262,9 @@ class ControlPanel(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def run_action(self, action: str, operation: str):
+        if self.starting_services:
+            messagebox.showinfo("服务正在启动", "日报智能体与 DSH Web 正在后台启动，请稍候再执行安装或更新。")
+            return
         if self.busy:
             return
         self.set_busy(True, operation)

@@ -2,7 +2,9 @@
 # Run from PowerShell: .\install-and-start.ps1
 
 [CmdletBinding()]
-param()
+param(
+    [switch]$NoDshWeb
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
@@ -192,6 +194,11 @@ $lanAddresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContin
     Select-Object -ExpandProperty IPAddress -Unique
 foreach ($address in $lanAddresses) {
     Write-Host "Report website (LAN): http://${address}:8766"
+}
+
+if ($NoDshWeb) {
+    Write-Host 'DSH Web was not started (-NoDshWeb). Daily agent services are ready.'
+    return
 }
 
 ${dshWebRunning} = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue

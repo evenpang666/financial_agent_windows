@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -20,6 +22,29 @@ WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def detect_lan_ip() -> str | None:
+    """Return the preferred private IPv4 address from the current routing table."""
+    candidates: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 80))
+            candidates.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        candidates.extend(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    for value in candidates:
+        try:
+            address = ipaddress.ip_address(value)
+            if address.version == 4 and address.is_private and not address.is_loopback:
+                return value
+        except ValueError:
+            continue
+    return None
 
 
 def powershell(action: str, on_output=None) -> str:
@@ -71,6 +96,11 @@ class ControlPanel(tk.Tk):
         self.status_text = tk.StringVar(value="正在读取运行状态…")
         self.operation_text = tk.StringVar(value="空闲")
         self.environment_text = tk.StringVar(value="环境检测中…")
+        lan_ip = detect_lan_ip()
+        self.lan_report_text = tk.StringVar(
+            value=f"其他设备可访问日报：http://{lan_ip}:8766（同一局域网）"
+            if lan_ip else "其他设备日报地址：未识别到局域网 IPv4"
+        )
         self.service_vars = {name: tk.StringVar(value="检测中") for name in ("日报任务", "数据服务", "日报页面", "DSH Web")}
         self.action_buttons: list[ttk.Button] = []
         self.busy = False
@@ -126,6 +156,7 @@ class ControlPanel(tk.Tk):
         access_info.pack(side="left", fill="both", expand=True, padx=18, pady=13)
         tk.Label(access_info, text="网页入口", bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
         tk.Label(access_info, text="服务随控制台启停；关闭网页后可在这里重新打开", bg=self.PANEL, fg=self.MUTED).pack(anchor="w", pady=(3, 0))
+        tk.Label(access_info, textvariable=self.lan_report_text, bg=self.PANEL, fg="#7f95bd", font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(3, 0))
         self._button(controls, "打开 DSH Web", "Primary.TButton", self.open_dsh_web).pack(side="left", padx=5, pady=14)
         self._button(controls, "打开日报", "Secondary.TButton", lambda: self.open_url("http://127.0.0.1:8766", "日报页面")).pack(side="left", padx=(5, 16), pady=14)
 

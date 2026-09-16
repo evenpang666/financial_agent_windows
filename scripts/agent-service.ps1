@@ -117,13 +117,13 @@ switch ($Action) {
         Start-Process -FilePath $dsh.Source -ArgumentList @('web') -WorkingDirectory $projectRoot
         foreach ($attempt in 1..30) {
             if (Test-PortListening 3080) {
-                Write-Host 'DSH Web 已启动。'
+                Write-Host 'DSH Web is running.'
                 break
             }
             Start-Sleep -Seconds 1
         }
         if (-not (Test-PortListening 3080)) {
-            throw 'DSH Web 未能在 30 秒内启动。'
+            throw 'DSH Web did not start within 30 seconds.'
         }
     }
     'DisableDshWeb' {
@@ -150,21 +150,21 @@ switch ($Action) {
         & $updater
     }
     'Status' {
-        Write-Host '[检测 1/4] 正在读取 Windows 日报计划任务...'
+        Write-Host '[Check 1/4] Reading Windows scheduled tasks...'
         $agentTaskState = Get-TaskState $dailyTask
         $reportTaskState = Get-TaskState $reportTask
-        Write-Host '[检测 2/4] 正在检查 8765、8766、3080 服务端口...'
+        Write-Host '[Check 2/4] Checking service ports 8765, 8766, and 3080...'
         $dataServiceRunning = Test-PortListening 8765
         $reportSiteRunning = Test-PortListening 8766
         $dshWebRunning = Test-PortListening 3080
-        Write-Host '[检测 3/4] 正在检查 Node.js、Python、Git 和虚拟环境...'
+        Write-Host '[Check 3/4] Checking Node.js, Python, Git, and the virtual environment...'
         $nodeAvailable = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
         $pythonAvailable = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
         $gitAvailable = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
         $gitCheckout = Test-Path -LiteralPath (Join-Path $projectRoot '.git')
         $venvReady = Test-Path -LiteralPath $pythonExe
         $dshAvailable = $null -ne (Get-Command dsh -ErrorAction SilentlyContinue)
-        Write-Host '[检测 4/4] 正在检查 DSH 财务研究插件...'
+        Write-Host '[Check 4/4] Checking the DSH finance plugin...'
         $manifestPath = Join-Path $env:USERPROFILE '.dsh\profiles\web\package.json'
         $pluginInstalled = $false
         if (Test-Path -LiteralPath $manifestPath) {

@@ -27,43 +27,43 @@ function Find-DshCommand {
     return $null
 }
 
-Require-Command node '未检测到 Node.js。请先安装 Node.js，并重新打开本程序。'
-Require-Command npm '未检测到 npm。请重新安装 Node.js，并重新打开本程序。'
-Require-Command python '未检测到 Python。请先安装 Python 3.11 或更高版本，并重新打开本程序。'
+Require-Command node 'Node.js was not found. Install Node.js, then reopen this control panel.'
+Require-Command npm 'npm was not found. Reinstall Node.js, then reopen this control panel.'
+Require-Command python 'Python was not found. Install Python 3.11 or later, then reopen this control panel.'
 
 $pythonVersionOk = & python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
 if ($LASTEXITCODE -ne 0) {
-    throw 'Python 版本过低，请安装 Python 3.11 或更高版本。'
+    throw 'Python 3.11 or later is required.'
 }
 
 Set-Location $projectRoot
-Write-Host '正在安装或更新 dsh 与 pnpm...'
+Write-Host 'Installing or updating dsh and pnpm...'
 & npm install -g @deepseek-ai/dsh pnpm
 if ($LASTEXITCODE -ne 0) {
-    throw "npm 依赖安装失败（退出码 $LASTEXITCODE）。"
+    throw "npm dependency installation failed with exit code $LASTEXITCODE."
 }
 
 $dshCommand = Find-DshCommand
 if (-not $dshCommand -or -not (Test-Path -LiteralPath $dshCommand)) {
-    throw 'dsh 安装完成后仍无法找到其可执行文件。'
+    throw 'The dsh executable was not found after installation.'
 }
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
-    Write-Host '正在创建 Python 虚拟环境...'
+    Write-Host 'Creating the Python virtual environment...'
     & python -m venv (Join-Path $projectRoot '.venv')
     if ($LASTEXITCODE -ne 0) {
-        throw "Python 虚拟环境创建失败（退出码 $LASTEXITCODE）。"
+        throw "Python virtual-environment creation failed with exit code $LASTEXITCODE."
     }
 }
 
-Write-Host '正在安装或更新 Python 依赖...'
+Write-Host 'Installing or updating Python dependencies...'
 & $venvPython -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) {
-    throw "pip 更新失败（退出码 $LASTEXITCODE）。"
+    throw "pip update failed with exit code $LASTEXITCODE."
 }
 & $venvPython -m pip install -r $requirements
 if ($LASTEXITCODE -ne 0) {
-    throw "Python 依赖安装失败（退出码 $LASTEXITCODE）。"
+    throw "Python dependency installation failed with exit code $LASTEXITCODE."
 }
 
 $profileRoot = Join-Path $env:USERPROFILE '.dsh\profiles\web'
@@ -79,26 +79,26 @@ if (Test-Path -LiteralPath $manifestPath) {
 }
 
 if ($registered) {
-    Write-Host '正在移除旧的本地插件注册...'
+    Write-Host 'Removing the previous local plugin registration...'
     & $dshCommand plugin --profile web remove dsh-finance-agent
     if ($LASTEXITCODE -ne 0) {
-        throw "旧插件注册移除失败（退出码 $LASTEXITCODE）。"
+        throw "The previous plugin registration could not be removed (exit code $LASTEXITCODE)."
     }
 }
 
-Write-Host '正在注册并安装最新版财务研究插件...'
+Write-Host 'Registering and installing the current finance plugin...'
 & $dshCommand plugin --profile web add $pluginPath
 if ($LASTEXITCODE -ne 0) {
-    throw "插件注册失败（退出码 $LASTEXITCODE）。"
+    throw "Plugin registration failed with exit code $LASTEXITCODE."
 }
 & $dshCommand plugin --profile web install
 if ($LASTEXITCODE -ne 0) {
-    throw "插件安装失败（退出码 $LASTEXITCODE）。"
+    throw "Plugin installation failed with exit code $LASTEXITCODE."
 }
 
 if (-not (Test-Path -LiteralPath $pushConfig)) {
     Copy-Item -LiteralPath $pushConfigExample -Destination $pushConfig
-    Write-Host '已创建本地日报配置。'
+    Write-Host 'Created the local daily-report configuration.'
 }
 
-Write-Host '安装完成。所有服务保持关闭，可在控制台中按需启用。'
+Write-Host 'Installation completed. All services remain stopped.'

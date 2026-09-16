@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $projectRoot '.git'))) {
 }
 
 Set-Location $projectRoot
-Write-Host '正在停止服务和日报任务...'
+Write-Host 'Stopping services and daily-report tasks...'
 foreach ($taskName in $taskNames) {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($task) {
@@ -34,6 +34,6 @@ if ($LASTEXITCODE -ne 0) {
     throw 'git pull failed. Local tracked changes were preserved; resolve the message above and try again.'
 }
 
-Write-Host '正在重新安装插件和项目依赖...'
+Write-Host 'Reinstalling the plugin and project dependencies...'
 & $installer
-Write-Host '更新完成。所有服务与计划任务均保持关闭。'
+Write-Host 'Update completed. All services and scheduled tasks remain stopped.'

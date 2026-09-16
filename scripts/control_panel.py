@@ -75,6 +75,7 @@ class ControlPanel(tk.Tk):
         self.action_buttons: list[ttk.Button] = []
         self.busy = False
         self.last_status_summary = ""
+        self.last_status_error = ""
         self._build_styles()
         self._build()
         self.append_log("控制台已启动，准备检测本机环境与服务状态。")
@@ -187,7 +188,7 @@ class ControlPanel(tk.Tk):
                 output = powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 self.after(0, lambda: self.action_done(action, output))
             except Exception as exc:
-                self.after(0, lambda: self.action_failed(str(exc)))
+                self.after(0, lambda detail=str(exc): self.action_failed(detail))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -221,7 +222,7 @@ class ControlPanel(tk.Tk):
                 payload = json.loads(output.splitlines()[-1])
                 self.after(0, lambda: self.show_status(payload, verbose))
             except Exception as exc:
-                self.after(0, lambda: self.status_failed(str(exc)))
+                self.after(0, lambda detail=str(exc): self.status_failed(detail))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -231,9 +232,12 @@ class ControlPanel(tk.Tk):
 
     def status_failed(self, detail: str):
         self.status_text.set(f"无法读取状态：{detail}")
-        self.append_log("✕ 状态检测失败：" + detail)
+        if detail != self.last_status_error:
+            self.append_log("✕ 状态检测失败：" + detail)
+            self.last_status_error = detail
 
     def show_status(self, payload: dict, verbose: bool = False):
+        self.last_status_error = ""
         agent_on = payload.get("agent_task") in {"Ready", "Running"}
         values = {
             "日报任务": agent_on,

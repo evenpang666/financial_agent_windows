@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -17,20 +18,36 @@ SERVICE_SCRIPT = PROJECT_ROOT / "scripts" / "agent-service.ps1"
 WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def powershell(action: str) -> str:
-    result = subprocess.run(
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def powershell(action: str, on_output=None) -> str:
+    process = subprocess.Popen(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SERVICE_SCRIPT), "-Action", action],
         cwd=PROJECT_ROOT,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
+        bufsize=1,
         creationflags=WINDOWS_CREATION_FLAGS,
     )
-    if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(detail or f"操作失败（退出码 {result.returncode}）。")
-    return result.stdout.strip()
+    lines = []
+    if process.stdout:
+        for raw_line in process.stdout:
+            line = ANSI_ESCAPE.sub("", raw_line.rstrip())
+            if not line:
+                continue
+            lines.append(line)
+            if on_output:
+                on_output(line)
+    return_code = process.wait()
+    output = "\n".join(lines).strip()
+    if return_code:
+        detail = "\n".join(lines[-40:]).strip()
+        raise RuntimeError(detail or f"操作失败（退出码 {return_code}）。")
+    return output
 
 
 class ControlPanel(tk.Tk):
@@ -46,7 +63,7 @@ class ControlPanel(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("财务研究智能体")
-        self.geometry("760x520")
+        self.geometry("760x660")
         self.resizable(False, False)
         self.configure(bg=self.BG)
         self.option_add("*Font", ("Microsoft YaHei UI", 9))
@@ -57,8 +74,10 @@ class ControlPanel(tk.Tk):
         self.service_vars = {name: tk.StringVar(value="检测中") for name in ("日报任务", "数据服务", "日报页面", "DSH Web")}
         self.action_buttons: list[ttk.Button] = []
         self.busy = False
+        self.last_status_summary = ""
         self._build_styles()
         self._build()
+        self.append_log("控制台已启动，准备检测本机环境与服务状态。")
         self.refresh_status()
         self.after(6000, self.periodic_refresh)
 
@@ -111,6 +130,18 @@ class ControlPanel(tk.Tk):
         self._button(maintenance, "安装 / 修复", "Secondary.TButton", lambda: self.confirm_action("Install", "安装中", "安装会停止当前服务，并安装除 Node.js、Python 外的全部依赖与插件。是否继续？")).pack(side="left", padx=5, pady=14)
         self._button(maintenance, "更新项目", "Primary.TButton", lambda: self.confirm_action("Update", "更新中", "更新会停止全部服务，拉取最新代码并重装依赖。完成后不会自动启用服务。是否继续？")).pack(side="left", padx=(5, 16), pady=14)
 
+        log_header = tk.Frame(body, bg=self.BG)
+        log_header.pack(fill="x", pady=(14, 6))
+        tk.Label(log_header, text="运行日志", bg=self.BG, fg=self.MUTED, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
+        tk.Button(log_header, text="清空", command=self.clear_log, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, borderwidth=0, cursor="hand2").pack(side="right")
+        log_box = tk.Frame(body, bg="#070c16", highlightbackground=self.LINE, highlightthickness=1)
+        log_box.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(log_box, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        self.log_text = tk.Text(log_box, height=8, bg="#070c16", fg="#b8c7df", insertbackground=self.TEXT, selectbackground="#29426b", relief="flat", borderwidth=0, padx=12, pady=9, font=("Cascadia Mono", 8), wrap="word", yscrollcommand=scrollbar.set, state="disabled")
+        self.log_text.pack(fill="both", expand=True)
+        scrollbar.configure(command=self.log_text.yview)
+
         footer = tk.Frame(self, bg="#0e1729", height=54)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
@@ -149,10 +180,11 @@ class ControlPanel(tk.Tk):
             return
         self.set_busy(True, operation)
         self.status_text.set(f"{operation}，请稍候…")
+        self.append_log(f"> powershell.exe agent-service.ps1 -Action {action}")
 
         def worker():
             try:
-                output = powershell(action)
+                output = powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 self.after(0, lambda: self.action_done(action, output))
             except Exception as exc:
                 self.after(0, lambda: self.action_failed(str(exc)))
@@ -162,6 +194,7 @@ class ControlPanel(tk.Tk):
     def action_done(self, action: str, output: str):
         self.set_busy(False)
         self.status_text.set(output.splitlines()[-1] if output else "操作完成。")
+        self.append_log("✓ 操作完成。")
         self.refresh_status()
         if action == "Update":
             messagebox.showinfo("更新完成", "代码、依赖与插件已更新，所有服务保持关闭。若控制台界面也有更新，请关闭后重新打开本程序。")
@@ -171,28 +204,36 @@ class ControlPanel(tk.Tk):
     def action_failed(self, detail: str):
         self.set_busy(False, "操作失败")
         self.status_text.set("操作未完成，请查看错误信息。")
+        self.append_log("✕ 操作失败，详情见上方输出。")
         messagebox.showerror("操作失败", detail)
         self.operation_text.set("空闲")
         self.refresh_status()
 
-    def refresh_status(self):
+    def refresh_status(self, verbose: bool = True):
         if self.busy:
             return
+        if verbose:
+            self.append_log("检测中：计划任务、服务端口、Node.js、Python、Git、虚拟环境与 DSH 插件…")
 
         def worker():
             try:
-                payload = json.loads(powershell("Status"))
-                self.after(0, lambda: self.show_status(payload))
+                output = powershell("Status", (lambda line: self.after(0, lambda value=line: self.append_log(value)) if not line.lstrip().startswith("{") else None) if verbose else None)
+                payload = json.loads(output.splitlines()[-1])
+                self.after(0, lambda: self.show_status(payload, verbose))
             except Exception as exc:
-                self.after(0, lambda: self.status_text.set(f"无法读取状态：{exc}"))
+                self.after(0, lambda: self.status_failed(str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def periodic_refresh(self):
-        self.refresh_status()
+        self.refresh_status(False)
         self.after(6000, self.periodic_refresh)
 
-    def show_status(self, payload: dict):
+    def status_failed(self, detail: str):
+        self.status_text.set(f"无法读取状态：{detail}")
+        self.append_log("✕ 状态检测失败：" + detail)
+
+    def show_status(self, payload: dict, verbose: bool = False):
         agent_on = payload.get("agent_task") in {"Ready", "Running"}
         values = {
             "日报任务": agent_on,
@@ -219,6 +260,27 @@ class ControlPanel(tk.Tk):
             self.environment_text.set("请先安装：" + "、".join(missing))
         active = [name for name, enabled in values.items() if enabled]
         self.status_text.set("已启用：" + "、".join(active) if active else "当前没有启用任何服务。")
+        environment = "环境就绪" if installed else "环境未完整安装"
+        summary = f"服务：{'、'.join(active) if active else '全部关闭'}；{environment}；Node.js={'是' if payload.get('node_available') else '否'}，Python={'是' if payload.get('python_available') else '否'}，Git={'是' if payload.get('git_available') else '否'}，插件={'是' if payload.get('plugin_installed') else '否'}"
+        if verbose or summary != self.last_status_summary:
+            self.append_log("[状态] " + summary)
+            self.last_status_summary = summary
+
+    def append_log(self, message: str):
+        if not hasattr(self, "log_text"):
+            return
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", message.rstrip() + "\n")
+        line_count = int(self.log_text.index("end-1c").split(".")[0])
+        if line_count > 500:
+            self.log_text.delete("1.0", f"{line_count - 500}.0")
+        self.log_text.configure(state="disabled")
+        self.log_text.see("end")
+
+    def clear_log(self):
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
 
 
 if __name__ == "__main__":

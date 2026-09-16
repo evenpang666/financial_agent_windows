@@ -150,6 +150,21 @@ switch ($Action) {
         & $updater
     }
     'Status' {
+        Write-Host '[检测 1/4] 正在读取 Windows 日报计划任务...'
+        $agentTaskState = Get-TaskState $dailyTask
+        $reportTaskState = Get-TaskState $reportTask
+        Write-Host '[检测 2/4] 正在检查 8765、8766、3080 服务端口...'
+        $dataServiceRunning = Test-PortListening 8765
+        $reportSiteRunning = Test-PortListening 8766
+        $dshWebRunning = Test-PortListening 3080
+        Write-Host '[检测 3/4] 正在检查 Node.js、Python、Git 和虚拟环境...'
+        $nodeAvailable = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
+        $pythonAvailable = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+        $gitAvailable = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+        $gitCheckout = Test-Path -LiteralPath (Join-Path $projectRoot '.git')
+        $venvReady = Test-Path -LiteralPath $pythonExe
+        $dshAvailable = $null -ne (Get-Command dsh -ErrorAction SilentlyContinue)
+        Write-Host '[检测 4/4] 正在检查 DSH 财务研究插件...'
         $manifestPath = Join-Path $env:USERPROFILE '.dsh\profiles\web\package.json'
         $pluginInstalled = $false
         if (Test-Path -LiteralPath $manifestPath) {
@@ -161,17 +176,17 @@ switch ($Action) {
             }
         }
         [pscustomobject]@{
-            agent_task = Get-TaskState $dailyTask
-            report_task = Get-TaskState $reportTask
-            data_service = Test-PortListening 8765
-            report_site = Test-PortListening 8766
-            dsh_web = Test-PortListening 3080
-            node_available = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
-            python_available = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-            git_available = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
-            git_checkout = Test-Path -LiteralPath (Join-Path $projectRoot '.git')
-            venv_ready = Test-Path -LiteralPath $pythonExe
-            dsh_available = $null -ne (Get-Command dsh -ErrorAction SilentlyContinue)
+            agent_task = $agentTaskState
+            report_task = $reportTaskState
+            data_service = $dataServiceRunning
+            report_site = $reportSiteRunning
+            dsh_web = $dshWebRunning
+            node_available = $nodeAvailable
+            python_available = $pythonAvailable
+            git_available = $gitAvailable
+            git_checkout = $gitCheckout
+            venv_ready = $venvReady
+            dsh_available = $dshAvailable
             plugin_installed = $pluginInstalled
         } | ConvertTo-Json -Compress
     }

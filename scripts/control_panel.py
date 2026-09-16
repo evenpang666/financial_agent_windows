@@ -50,7 +50,7 @@ def detect_lan_ip() -> str | None:
     return None
 
 
-def powershell(action: str, on_output=None) -> str:
+def powershell(action: str, on_output=None, on_process=None) -> str:
     process = subprocess.Popen(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SERVICE_SCRIPT), "-Action", action],
         cwd=PROJECT_ROOT,
@@ -62,21 +62,27 @@ def powershell(action: str, on_output=None) -> str:
         bufsize=1,
         creationflags=WINDOWS_CREATION_FLAGS,
     )
-    lines = []
-    if process.stdout:
-        for raw_line in process.stdout:
-            line = ANSI_ESCAPE.sub("", raw_line.rstrip())
-            if not line:
-                continue
-            lines.append(line)
-            if on_output:
-                on_output(line)
-    return_code = process.wait()
-    output = "\n".join(lines).strip()
-    if return_code:
-        detail = "\n".join(lines[-40:]).strip()
-        raise RuntimeError(detail or f"操作失败（退出码 {return_code}）。")
-    return output
+    if on_process:
+        on_process(process)
+    try:
+        lines = []
+        if process.stdout:
+            for raw_line in process.stdout:
+                line = ANSI_ESCAPE.sub("", raw_line.rstrip())
+                if not line:
+                    continue
+                lines.append(line)
+                if on_output:
+                    on_output(line)
+        return_code = process.wait()
+        output = "\n".join(lines).strip()
+        if return_code:
+            detail = "\n".join(lines[-40:]).strip()
+            raise RuntimeError(detail or f"操作失败（退出码 {return_code}）。")
+        return output
+    finally:
+        if on_process:
+            on_process(None)
 
 
 class ControlPanel(tk.Tk):
@@ -109,6 +115,9 @@ class ControlPanel(tk.Tk):
         self.busy = False
         self.starting_services = False
         self.startup_thread: threading.Thread | None = None
+        self.startup_process: subprocess.Popen | None = None
+        self.startup_process_lock = threading.Lock()
+        self.startup_cancelled = False
         self.closing = False
         self.last_status_summary = ""
         self.last_status_error = ""
@@ -225,6 +234,7 @@ class ControlPanel(tk.Tk):
             self.operation_text.set("等待安装")
             return
         self.starting_services = True
+        self.startup_cancelled = False
         self.operation_text.set("后台启动中")
         self.status_text.set("正在启用日报智能体与 DSH Web…")
 
@@ -232,18 +242,37 @@ class ControlPanel(tk.Tk):
             try:
                 outputs = []
                 for action in ("EnableAgent", "EnableDshWeb"):
-                    if self.closing:
+                    if self.closing or self.startup_cancelled:
                         break
                     self.after(0, lambda value=action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
-                    outputs.append(powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value))))
-                if not self.closing:
+                    outputs.append(powershell(
+                        action,
+                        lambda line: self.after(0, lambda value=line: self.append_log(value)),
+                        self.track_startup_process,
+                    ))
+                if not self.closing and not self.startup_cancelled:
                     self.after(0, lambda: self.services_started("\n".join(outputs)))
             except Exception as exc:
-                if not self.closing:
+                if not self.closing and not self.startup_cancelled:
                     self.after(0, lambda detail=str(exc): self.startup_failed(detail))
 
         self.startup_thread = threading.Thread(target=worker, daemon=True)
         self.startup_thread.start()
+
+    def track_startup_process(self, process: subprocess.Popen | None):
+        with self.startup_process_lock:
+            self.startup_process = process
+
+    def cancel_startup(self):
+        self.startup_cancelled = True
+        self.starting_services = False
+        with self.startup_process_lock:
+            process = self.startup_process
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
     def services_started(self, output: str):
         if self.closing:
@@ -295,8 +324,7 @@ class ControlPanel(tk.Tk):
         self.withdraw()
 
         def worker():
-            if self.startup_thread and self.startup_thread.is_alive():
-                self.startup_thread.join(timeout=45)
+            self.cancel_startup()
             errors = []
             for action in ("DisableDshWeb", "DisableAgent"):
                 try:
@@ -320,7 +348,8 @@ class ControlPanel(tk.Tk):
 
         def worker():
             if self.startup_thread and self.startup_thread.is_alive():
-                self.startup_thread.join(timeout=45)
+                self.after(0, lambda: self.append_log("正在中止自动启动流程并立即关闭全部服务…"))
+                self.cancel_startup()
             errors = []
             for action in ("DisableDshWeb", "DisableAgent"):
                 try:
@@ -361,10 +390,8 @@ class ControlPanel(tk.Tk):
         def worker():
             try:
                 if self.startup_thread and self.startup_thread.is_alive():
-                    self.after(0, lambda: self.append_log("等待自动启动流程结束后再安全停止服务…"))
-                    self.startup_thread.join(timeout=45)
-                    if self.startup_thread.is_alive():
-                        raise RuntimeError("自动启动流程超过 45 秒仍未结束。请关闭控制台后重新打开，再执行维护操作。")
+                    self.after(0, lambda: self.append_log("正在中止自动启动流程并立即关闭全部服务…"))
+                    self.cancel_startup()
                 for stop_action in ("DisableDshWeb", "DisableAgent"):
                     self.after(0, lambda value=stop_action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
                     powershell(stop_action, lambda line: self.after(0, lambda value=line: self.append_log(value)))

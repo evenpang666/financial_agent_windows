@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import os
 import re
 import shutil
 import socket
@@ -55,6 +56,8 @@ def detect_lan_ip() -> str | None:
 
 
 def stream_command(args: list[str], on_output=None, on_process=None) -> str:
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "utf-8"
     process = subprocess.Popen(
         args,
         cwd=PROJECT_ROOT,
@@ -63,6 +66,7 @@ def stream_command(args: list[str], on_output=None, on_process=None) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=environment,
         bufsize=1,
         creationflags=WINDOWS_CREATION_FLAGS if sys.platform == "win32" else 0,
     )
@@ -85,6 +89,8 @@ def stream_command(args: list[str], on_output=None, on_process=None) -> str:
             raise RuntimeError(detail or f"操作失败（退出码 {return_code}）。")
         return output
     finally:
+        if process.stdout:
+            process.stdout.close()
         if on_process:
             on_process(None)
 

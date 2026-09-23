@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="本地股票双时点日报">
-  <title>A 股开盘前日报</title>
+  <title>股票双时点日报与盘中因子排名</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -27,6 +27,22 @@
           <button id="refreshButton" type="button"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16 7.25A6.5 6.5 0 1 0 16.2 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 3.75v3.5h-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>刷新</button>
         </div>
       </div>
+    </section>
+    <section class="insight-grid" aria-label="日报数据看板">
+      <div class="insight-card"><p class="eyebrow">GLOBAL MARKETS</p><h2>全球市场与大盘</h2><p id="globalMeta" class="insight-meta">等待日报数据</p><div id="globalChart" class="bar-chart"></div><div id="marketBreadth" class="breadth-summary"></div></div>
+      <div class="insight-card"><p class="eyebrow">SECTOR PULSE</p><h2>重点板块</h2><p id="sectorMeta" class="insight-meta">半导体 · 存储 · 光通信</p><div id="sectorChart" class="bar-chart"></div></div>
+    </section>
+    <section class="insight-card horizon-shell" aria-labelledby="horizonTitle">
+      <div class="section-heading"><div><p class="eyebrow">RESEARCH WATCHLIST</p><h2 id="horizonTitle">分周期股票观察名单</h2><p id="horizonMeta" class="insight-meta">请先选择一份日报</p></div><div class="segmented" role="group" aria-label="推荐周期"><button type="button" data-horizon="long" aria-pressed="true">中长线</button><button type="button" data-horizon="short" aria-pressed="false">短线</button><button type="button" data-horizon="ultra_short" aria-pressed="false">超短线</button></div></div>
+      <div id="horizonContent" aria-live="polite"></div>
+    </section>
+    <section class="insight-card portfolio-shell" aria-labelledby="portfolioTitle">
+      <div class="section-heading"><div><p class="eyebrow">ON-DEMAND PORTFOLIO</p><h2 id="portfolioTitle">持仓分析</h2><p id="portfolioMeta" class="insight-meta">默认不读取持仓；点击后按当前公开数据分析。</p></div><button id="portfolioButton" type="button">分析我的持仓</button></div>
+      <div id="portfolioContent" aria-live="polite"></div>
+    </section>
+    <section class="ranking-shell" aria-labelledby="rankingTitle">
+      <div class="ranking-heading"><div><p class="eyebrow">INTRADAY FACTOR RESEARCH</p><h2 id="rankingTitle">最新盘中因子排名</h2><p id="rankingMeta">尚未生成排名。请在控制面板依次点击“开启训练”“获得因子”“开始推荐”。</p></div><span class="ranking-badge">A 股 · 点击后至收盘</span></div>
+      <div id="rankingContent" class="ranking-content" aria-live="polite"></div>
     </section>
     <section class="report-shell" aria-live="polite">
       <div class="report-topline" aria-hidden="true"><span></span><span></span><span></span></div>

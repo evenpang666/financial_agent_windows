@@ -159,7 +159,7 @@ def run_once(config: dict, force: bool = False, session: str = "morning") -> boo
         return False
     base_url = str(config["data_service_url"]).rstrip("/")
     query = urlencode({"candidate_limit": int(config.get("candidate_limit", 5)), "market": selected_market, "session": session})
-    report = get_json(f"{base_url}/v1/daily-report?{query}")
+    report = get_json(f"{base_url}/v1/daily-report?{query}", timeout=300)
     if not report.get("is_trading_day"):
         log(f"今日不是交易日，不生成或推送{phase_name}。")
         return False

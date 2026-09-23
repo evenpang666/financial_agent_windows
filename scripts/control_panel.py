@@ -1,11 +1,12 @@
 #!/usr/bin/env python
-"""Compact Windows control panel for the daily agent and DSH Web."""
+"""Compact Windows/Linux control panel for the daily agent and factor lab."""
 
 from __future__ import annotations
 
 import json
 import ipaddress
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -18,8 +19,11 @@ from tkinter import messagebox, ttk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SERVICE_SCRIPT = PROJECT_ROOT / "scripts" / "agent-service.ps1"
-VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-CONTROL_PANEL_LAUNCHER = PROJECT_ROOT / "control_panel.cmd"
+VENV_PYTHON = PROJECT_ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+CONTROL_PANEL_LAUNCHER = PROJECT_ROOT / ("control_panel.cmd" if sys.platform == "win32" else "control_panel.sh")
+FACTOR_SCRIPT = PROJECT_ROOT / "scripts" / "factor_lab.py"
+LINUX_SERVICE_SCRIPT = PROJECT_ROOT / "scripts" / "linux_service.py"
+LINUX_UPDATE_SCRIPT = PROJECT_ROOT / "scripts" / "linux_update.sh"
 WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 WINDOWS_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
@@ -50,9 +54,9 @@ def detect_lan_ip() -> str | None:
     return None
 
 
-def powershell(action: str, on_output=None, on_process=None) -> str:
+def stream_command(args: list[str], on_output=None, on_process=None) -> str:
     process = subprocess.Popen(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SERVICE_SCRIPT), "-Action", action],
+        args,
         cwd=PROJECT_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -60,7 +64,7 @@ def powershell(action: str, on_output=None, on_process=None) -> str:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        creationflags=WINDOWS_CREATION_FLAGS,
+        creationflags=WINDOWS_CREATION_FLAGS if sys.platform == "win32" else 0,
     )
     if on_process:
         on_process(process)
@@ -85,6 +89,21 @@ def powershell(action: str, on_output=None, on_process=None) -> str:
             on_process(None)
 
 
+def service_command(action: str, on_output=None, on_process=None) -> str:
+    if sys.platform == "win32":
+        args = ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SERVICE_SCRIPT), "-Action", action]
+    elif action == "Update":
+        args = ["bash", str(LINUX_UPDATE_SCRIPT)]
+    else:
+        args = [str(VENV_PYTHON), str(LINUX_SERVICE_SCRIPT), action]
+    return stream_command(args, on_output, on_process)
+
+
+def service_label(action: str) -> str:
+    return (f"powershell.exe agent-service.ps1 -Action {action}" if sys.platform == "win32"
+            else ("bash linux_update.sh" if action == "Update" else f"python linux_service.py {action}"))
+
+
 class ControlPanel(tk.Tk):
     BG = "#0a1020"
     PANEL = "#111a2c"
@@ -98,7 +117,7 @@ class ControlPanel(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("财务研究智能体")
-        self.geometry("760x660")
+        self.geometry("760x790")
         self.resizable(False, False)
         self.configure(bg=self.BG)
         self.option_add("*Font", ("Microsoft YaHei UI", 9))
@@ -121,8 +140,11 @@ class ControlPanel(tk.Tk):
         self.closing = False
         self.last_status_summary = ""
         self.last_status_error = ""
+        self.factor_process: subprocess.Popen | None = None
+        self.factor_status = tk.StringVar(value="因子模型：未训练")
         self._build_styles()
         self._build()
+        self.update_factor_status()
         self.protocol("WM_DELETE_WINDOW", self.close_panel)
         if VENV_PYTHON.exists():
             self.append_log("控制台已启动，正在静默启用日报智能体与 DSH Web。")
@@ -179,6 +201,18 @@ class ControlPanel(tk.Tk):
         self._button(controls, "打开日报", "Secondary.TButton", lambda: self.open_url("http://127.0.0.1:8766", "日报页面")).pack(side="left", padx=(5, 16), pady=14)
 
         maintenance = tk.Frame(body, bg=self.PANEL, highlightbackground=self.LINE, highlightthickness=1)
+        factor_box = tk.Frame(body, bg=self.PANEL, highlightbackground=self.LINE, highlightthickness=1)
+        factor_box.pack(fill="x", pady=(0, 14))
+        factor_info = tk.Frame(factor_box, bg=self.PANEL)
+        factor_info.pack(fill="x", padx=18, pady=(12, 4))
+        tk.Label(factor_info, text="盘中因子研究 · A 股", bg=self.PANEL, fg=self.TEXT, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
+        tk.Label(factor_info, textvariable=self.factor_status, bg=self.PANEL, fg=self.MUTED, anchor="w").pack(anchor="w", pady=(3, 0))
+        factor_buttons = tk.Frame(factor_box, bg=self.PANEL)
+        factor_buttons.pack(fill="x", padx=13, pady=(0, 11))
+        self._button(factor_buttons, "开启训练", "Secondary.TButton", lambda: self.run_factor_action("train", "训练中")).pack(side="left", padx=5)
+        self._button(factor_buttons, "获得因子", "Secondary.TButton", lambda: self.run_factor_action("select", "选择因子中")).pack(side="left", padx=5)
+        self._button(factor_buttons, "开始推荐", "Primary.TButton", lambda: self.run_factor_action("rank", "获取排名中")).pack(side="left", padx=5)
+        tk.Label(factor_buttons, text="成功排名会即时显示在日报网页", bg=self.PANEL, fg="#7f95bd", font=("Microsoft YaHei UI", 8)).pack(side="right", padx=5)
         maintenance.pack(fill="x")
         info = tk.Frame(maintenance, bg=self.PANEL)
         info.pack(side="left", fill="both", expand=True, padx=18, pady=13)
@@ -244,8 +278,8 @@ class ControlPanel(tk.Tk):
                 for action in ("EnableAgent", "EnableDshWeb"):
                     if self.closing or self.startup_cancelled:
                         break
-                    self.after(0, lambda value=action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
-                    outputs.append(powershell(
+                    self.after(0, lambda value=action: self.append_log(f"> {service_label(value)}"))
+                    outputs.append(service_command(
                         action,
                         lambda line: self.after(0, lambda value=line: self.append_log(value)),
                         self.track_startup_process,
@@ -299,7 +333,7 @@ class ControlPanel(tk.Tk):
             messagebox.showerror("无法打开网页", f"未能调用默认浏览器。请手动访问：\n{url}")
 
     def open_dsh_web(self):
-        log_path = PROJECT_ROOT / "data" / "dsh-web.stdout.log"
+        log_path = PROJECT_ROOT / "data" / ("dsh-web.stdout.log" if sys.platform == "win32" else "linux-services/dsh.stdout.log")
         url = "http://127.0.0.1:3080"
         try:
             content = ANSI_ESCAPE.sub("", log_path.read_text(encoding="utf-8", errors="replace"))
@@ -314,9 +348,11 @@ class ControlPanel(tk.Tk):
     def close_panel(self):
         if self.closing:
             return
-        if self.busy:
+        if self.busy and self.factor_process is None:
             messagebox.showinfo("操作进行中", "请等待当前安装、更新或服务操作完成后再关闭控制台。")
             return
+        if self.factor_process and self.factor_process.poll() is None:
+            self.factor_process.terminate()
         self.closing = True
         self.set_busy(True, "正在退出")
         self.status_text.set("正在关闭 DSH Web 与日报智能体服务…")
@@ -328,8 +364,8 @@ class ControlPanel(tk.Tk):
             errors = []
             for action in ("DisableDshWeb", "DisableAgent"):
                 try:
-                    self.after(0, lambda value=action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
-                    powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                    self.after(0, lambda value=action: self.append_log(f"> {service_label(value)}"))
+                    service_command(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 except Exception as exc:
                     errors.append(str(exc))
             if errors:
@@ -353,18 +389,14 @@ class ControlPanel(tk.Tk):
             errors = []
             for action in ("DisableDshWeb", "DisableAgent"):
                 try:
-                    powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                    service_command(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 except Exception as exc:
                     errors.append(str(exc))
             if errors:
                 self.after(0, lambda: self.install_restart_failed("；".join(errors)))
                 return
             try:
-                subprocess.Popen(
-                    ["cmd.exe", "/d", "/c", "call", str(CONTROL_PANEL_LAUNCHER)],
-                    cwd=PROJECT_ROOT,
-                    creationflags=WINDOWS_NEW_CONSOLE,
-                )
+                self.launch_bootstrap()
             except Exception as exc:
                 self.after(0, lambda detail=str(exc): self.install_restart_failed(detail))
                 return
@@ -378,6 +410,85 @@ class ControlPanel(tk.Tk):
         self.status_text.set("无法重新启动安装流程，请查看错误信息。")
         self.append_log("✕ 无法重新启动安装流程：" + detail)
         messagebox.showerror("安装 / 修复启动失败", detail)
+
+    def launch_bootstrap(self):
+        if sys.platform == "win32":
+            args = ["cmd.exe", "/d", "/c", "call", str(CONTROL_PANEL_LAUNCHER)]
+            subprocess.Popen(args, cwd=PROJECT_ROOT, creationflags=WINDOWS_NEW_CONSOLE)
+            return
+        options = (["x-terminal-emulator", "-e", "bash", str(CONTROL_PANEL_LAUNCHER)],
+                   ["gnome-terminal", "--", "bash", str(CONTROL_PANEL_LAUNCHER)],
+                   ["konsole", "-e", "bash", str(CONTROL_PANEL_LAUNCHER)],
+                   ["xterm", "-e", "bash", str(CONTROL_PANEL_LAUNCHER)])
+        for args in options:
+            if shutil.which(args[0]):
+                subprocess.Popen(args, cwd=PROJECT_ROOT)
+                return
+        raise RuntimeError("未找到终端程序；请在终端运行 ./control_panel.sh 完成安装。")
+
+    def update_factor_status(self):
+        try:
+            factor_module = __import__("factor_lab")
+            state = factor_module.status()
+            if state["model_id"] and state["trained_at"] and state["selected_at"] and state["trained_at"] > state["selected_at"]:
+                self.factor_status.set("新训练已完成 · 请点击“获得因子”发布；旧模型仍可查看")
+            elif state["model_id"]:
+                factors = "、".join(state["factors"])
+                quality = "探索性模拟" if state.get("quality") == "exploratory" else "已验证"
+                self.factor_status.set(f"{quality}因子：{factors} · 最近排名：{state['latest_ranking_at'] or '暂无'}")
+            elif state["trained_at"]:
+                self.factor_status.set("训练已完成 · 点击“获得因子”评估并发布模型")
+            else:
+                self.factor_status.set("尚未训练 · 首次训练需下载近期5分钟历史行情")
+        except Exception:
+            self.factor_status.set("因子状态暂不可读")
+
+    def run_factor_action(self, action: str, operation: str):
+        if self.busy or self.closing:
+            return
+        self.set_busy(True, operation)
+        self.status_text.set(f"{operation}，详情见运行日志…")
+        self.append_log(f"> {VENV_PYTHON.name} factor_lab.py {action}")
+
+        def worker():
+            try:
+                output = stream_command([str(VENV_PYTHON), str(FACTOR_SCRIPT), action],
+                                        lambda line: self.after(0, lambda value=line: self.append_log(value)),
+                                        lambda process: setattr(self, "factor_process", process))
+                self.after(0, lambda: self.factor_action_done(action, output))
+            except Exception as exc:
+                if not self.closing:
+                    lines = str(exc).splitlines()
+                    summary = next((line for line in reversed(lines) if line.startswith("错误：")), lines[-1] if lines else str(exc))
+                    self.after(0, lambda detail=summary[:900]: self.action_failed(detail))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def factor_action_done(self, action: str, output: str):
+        if self.closing:
+            return
+        self.set_busy(False)
+        self.update_factor_status()
+        self.status_text.set(output.splitlines()[-1] if output else "操作完成。")
+        if action == "select":
+            factor_module = __import__("factor_lab")
+            evaluation = factor_module.read_json(factor_module.EVALUATION)
+            model = factor_module.read_json(factor_module.MODEL)
+            selected = {item["key"] for item in model.get("factors", [])}
+            quality = "探索性模拟，非正式验证" if model.get("quality") == "exploratory" else "正式通过"
+            lines = [f"模型：{model.get('model_id', '未发布')} · {quality}", "因子按验证窗口 Rank IC 排序："]
+            for position, item in enumerate(evaluation.get("factors", []), 1):
+                marker = "✓" if item["key"] in selected else "·"
+                validation = item.get("validation_ic")
+                holdout = item.get("holdout_ic")
+                share = item.get("validation_positive_share")
+                lines.append(f"{position}. {marker} {item['name']}  训练IC={item.get('train_ic', '不足')}  验证IC={validation if validation is not None else '不足'}  正向占比={share if share is not None else '不足'}  留出IC={holdout if holdout is not None else '不足'}")
+            lines.append("✓ 表示已选；留出结果仅供观察。")
+            if model.get("selection_warning"):
+                lines.append(model["selection_warning"])
+            messagebox.showinfo("因子评估结果", "\n".join(lines))
+        if action == "rank":
+            self.append_log("✓ 最新因子排名已推送到日报网页。")
 
     def run_maintenance(self, action: str, operation: str):
         """Stop all managed services before an installation or an update."""
@@ -393,12 +504,12 @@ class ControlPanel(tk.Tk):
                     self.after(0, lambda: self.append_log("正在中止自动启动流程并立即关闭全部服务…"))
                     self.cancel_startup()
                 for stop_action in ("DisableDshWeb", "DisableAgent"):
-                    self.after(0, lambda value=stop_action: self.append_log(f"> powershell.exe agent-service.ps1 -Action {value}"))
-                    powershell(stop_action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                    self.after(0, lambda value=stop_action: self.append_log(f"> {service_label(value)}"))
+                    service_command(stop_action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 self.after(0, lambda: self.append_log("✓ 全部服务已停止，开始后续维护操作。"))
                 self.after(0, lambda: self.status_text.set(f"{operation}，请稍候…"))
-                self.after(0, lambda: self.append_log(f"> powershell.exe agent-service.ps1 -Action {action}"))
-                output = powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                self.after(0, lambda: self.append_log(f"> {service_label(action)}"))
+                output = service_command(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 self.after(0, lambda: self.action_done(action, output))
             except Exception as exc:
                 self.after(0, lambda detail=str(exc): self.action_failed(detail))
@@ -413,11 +524,11 @@ class ControlPanel(tk.Tk):
             return
         self.set_busy(True, operation)
         self.status_text.set(f"{operation}，请稍候…")
-        self.append_log(f"> powershell.exe agent-service.ps1 -Action {action}")
+        self.append_log(f"> {service_label(action)}")
 
         def worker():
             try:
-                output = powershell(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
+                output = service_command(action, lambda line: self.after(0, lambda value=line: self.append_log(value)))
                 self.after(0, lambda: self.action_done(action, output))
             except Exception as exc:
                 self.after(0, lambda detail=str(exc): self.action_failed(detail))
@@ -447,11 +558,11 @@ class ControlPanel(tk.Tk):
         if self.busy or self.closing:
             return
         if verbose:
-            self.append_log("检测中：计划任务、服务端口、Node.js、Python、Git、虚拟环境与 DSH 插件…")
+            self.append_log("检测中：日报调度、服务端口、Node.js、Python、Git、虚拟环境与 DSH 插件…")
 
         def worker():
             try:
-                output = powershell("Status", (lambda line: self.after(0, lambda value=line: self.append_log(value)) if not line.lstrip().startswith("{") else None) if verbose else None)
+                output = service_command("Status", (lambda line: self.after(0, lambda value=line: self.append_log(value)) if not line.lstrip().startswith("{") else None) if verbose else None)
                 payload = json.loads(output.splitlines()[-1])
                 self.after(0, lambda: self.show_status(payload, verbose))
             except Exception as exc:
@@ -463,6 +574,7 @@ class ControlPanel(tk.Tk):
         if self.closing:
             return
         self.refresh_status(False)
+        self.update_factor_status()
         self.after(6000, self.periodic_refresh)
 
     def status_failed(self, detail: str):
@@ -527,6 +639,4 @@ class ControlPanel(tk.Tk):
 
 
 if __name__ == "__main__":
-    if sys.platform != "win32":
-        raise SystemExit("此控制台仅支持 Windows。")
     ControlPanel().mainloop()

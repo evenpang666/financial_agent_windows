@@ -214,10 +214,16 @@ class FinanceFeatureTests(unittest.TestCase):
              patch.object(server, "portfolio_response", return_value={"holdings": [{"symbol": "600519"}]}), \
              patch.object(server, "market_panorama_response", return_value=panorama), \
              patch.object(server, "analyze_stock_response", return_value=analysis.copy()), \
+             patch.object(server, "global_market_response", return_value={"indices": [], "source": "test"}), \
+             patch.object(server, "sector_focus_response", return_value={"boards": [], "missing_themes": [], "source": "test"}), \
              patch.object(server, "market_events_response", return_value=events), \
              patch.object(server, "candidate_ranking_response", return_value=ranking):
             result = server.daily_report_response(5)
-        self.assertIn("短期（1–4周）", result["markdown"])
+        self.assertNotIn("已持仓股票", result["markdown"])
+        self.assertEqual(result["portfolio"], [])
+        self.assertIn("全球主要指数", result["markdown"])
+        self.assertIn("重点板块", result["markdown"])
+        self.assertIn("分周期研究观察名单", result["markdown"])
         self.assertIn("最近一月", result["markdown"])
         self.assertIn("热门股票推荐排行", result["markdown"])
         self.assertIn("买入倾向", result["markdown"])
@@ -310,7 +316,7 @@ class FinanceFeatureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HKEX"):
             server.announcements_response("00700", "2026-01-01", "2026-09-15", 20, "hk")
 
-    def test_hk_daily_report_only_analyzes_hk_holdings(self):
+    def test_hk_daily_report_never_reads_holdings(self):
         panorama = {
             "market_state": {"summary": "测试市场状态", "risk_level": "中", "reference_position": "40%–60%", "buy_tendency_adjustment": 0},
             "market_breadth": {"label": "均衡", "advancing": 100, "declining": 100, "score": 50},
@@ -326,17 +332,57 @@ class FinanceFeatureTests(unittest.TestCase):
         }
         ranking = {"ranking": [], "method": "测试评分"}
         with patch.object(server, "trading_day_response", return_value={"is_trading_day": True, "source": "test"}) as calendar, \
-             patch.object(server, "portfolio_response", return_value={"holdings": [{"symbol": "600519"}, {"symbol": "00700", "market": "hk"}]}), \
+             patch.object(server, "portfolio_response") as portfolio_call, \
              patch.object(server, "market_panorama_response", return_value=panorama) as panorama_call, \
-             patch.object(server, "analyze_stock_response", return_value=analysis), \
+             patch.object(server, "analyze_stock_response", return_value=analysis) as analyze_call, \
+             patch.object(server, "global_market_response", return_value={"indices": [], "source": "test"}), \
+             patch.object(server, "sector_focus_response", return_value={"boards": [], "missing_themes": [], "source": "test"}), \
              patch.object(server, "market_events_response", return_value={"events": []}), \
              patch.object(server, "candidate_ranking_response", return_value=ranking):
             result = server.daily_report_response(5, "hk")
         self.assertEqual(result["market"], "hk")
-        self.assertEqual([item["symbol"] for item in result["portfolio"]], ["00700"])
+        self.assertEqual(result["portfolio"], [])
+        portfolio_call.assert_not_called()
+        analyze_call.assert_not_called()
         self.assertIn("# 港股日报1｜开盘前研究简报", result["markdown"])
         calendar.assert_called_once_with(market="hk")
         panorama_call.assert_called_once_with(market="hk")
+
+    def test_global_and_theme_snapshots_keep_source_timestamps_and_missing_themes(self):
+        global_frame = pd.DataFrame([
+            {"代码": "SPX", "名称": "标普500", "最新价": 6000, "涨跌幅": -1.2, "最新行情时间": "2026-09-22 04:00:00"},
+            {"代码": "N225", "名称": "日经225", "最新价": 40000, "涨跌幅": 0.4, "最新行情时间": "2026-09-23 14:00:00"},
+        ])
+        board_frame = pd.DataFrame([
+            {"板块名称": "半导体概念", "涨跌幅": 2.1, "上涨家数": 20, "下跌家数": 10, "领涨股票": "测试股"},
+            {"板块名称": "光通信", "涨跌幅": -0.5, "上涨家数": 4, "下跌家数": 8, "领涨股票": "另一股"},
+        ])
+        with patch.object(server.ak, "index_global_spot_em", create=True, return_value=global_frame), \
+             patch.object(server.ak, "stock_board_concept_name_em", create=True, return_value=board_frame):
+            global_data = server.global_market_response()
+            sectors = server.sector_focus_response()
+        self.assertEqual(global_data["indices"][0]["quote_time"], "2026-09-22 04:00:00")
+        self.assertEqual([item["region"] for item in global_data["indices"]], ["美股", "日股"])
+        self.assertEqual(sectors["missing_themes"], ["存储"])
+
+    def test_period_recommendations_abstain_when_financial_evidence_missing(self):
+        analysis = {"recommendation": {"score_components": {"long_fundamental_valuation_score": 2,
+                     "short_technical_score": 2}}, "latest_report_period": None,
+                    "short_term": {"evidence": ["价格高于MA20"]}, "long_term": {"evidence": ["ROE良好"]},
+                    "quote": {"quote": {"涨跌幅": 2, "换手率": 3}}, "unavailable": []}
+        candidates = {"ranking": [{"symbol": "600519", "name": "测试股", "price": 100, "pe_ttm": 20}]}
+        with patch.object(server, "analyze_stock_response", return_value=analysis):
+            result = server.horizon_recommendations(candidates, "a", {})
+        self.assertEqual(result["horizons"]["long"], [])
+        self.assertEqual(len(result["horizons"]["short"]), 1)
+        self.assertEqual(len(result["horizons"]["ultra_short"]), 1)
+
+    def test_portfolio_analysis_requires_saved_holdings(self):
+        with patch.object(server, "portfolio_response", return_value={"holdings": []}), \
+             patch.object(server, "analyze_stock_response") as analyze:
+            result = server.portfolio_analysis_response("a")
+        self.assertFalse(result["available"])
+        analyze.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import queue
 import tempfile
 import unittest
@@ -52,6 +53,37 @@ class ReportWebServerTests(unittest.TestCase):
         finally:
             with report_web.SUBSCRIBERS_LOCK:
                 report_web.SUBSCRIBERS.discard(subscriber)
+
+    def test_latest_factor_ranking_is_independent_of_daily_reports(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(report_web, "RANKING_FILE", Path(directory) / "latest.json"):
+            self.assertFalse(report_web.latest_ranking()["available"])
+            report_web.RANKING_FILE.write_text(json.dumps({"model_id": "m1", "ranking": [{"symbol": "600001"}]}))
+            self.assertEqual(report_web.latest_ranking()["model_id"], "m1")
+            subscriber = queue.Queue()
+            with report_web.SUBSCRIBERS_LOCK:
+                report_web.SUBSCRIBERS.add(subscriber)
+            try:
+                report_web.publish_ranking_event()
+                self.assertEqual(json.loads(subscriber.get_nowait())["type"], "ranking")
+            finally:
+                with report_web.SUBSCRIBERS_LOCK:
+                    report_web.SUBSCRIBERS.discard(subscriber)
+
+    def test_structured_report_view_excludes_portfolio_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "reports").mkdir()
+            (root / "snapshots").mkdir()
+            (root / "reports" / "2026-09-23-a-morning.md").write_text("# 日报1", encoding="utf-8")
+            (root / "snapshots" / "2026-09-23-a-morning.json").write_text(json.dumps({
+                "portfolio": [{"symbol": "600519", "quantity": 100}],
+                "global_markets": {"indices": [{"code": "SPX"}]},
+            }), encoding="utf-8")
+            with patch.object(report_web, "REPORT_DIR", root / "reports"), \
+                 patch.object(report_web, "SNAPSHOT_DIR", root / "snapshots"):
+                report = report_web.read_report("2026-09-23-a-morning.md")
+            self.assertIn("global_markets", report["view"])
+            self.assertNotIn("portfolio", report["view"])
 
 
 if __name__ == "__main__":

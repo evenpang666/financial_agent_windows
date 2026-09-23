@@ -13,11 +13,14 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = PROJECT_ROOT / "web"
 REPORT_DIR = PROJECT_ROOT / "data" / "reports"
+RANKING_FILE = PROJECT_ROOT / "data" / "factor-lab" / "latest-ranking.json"
+SNAPSHOT_DIR = PROJECT_ROOT / "data" / "report-snapshots"
 HOST = os.getenv("FINANCE_REPORT_HOST", "0.0.0.0")
 PORT = int(os.getenv("FINANCE_REPORT_PORT", "8766"))
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-(?:a|hk)-(?:morning|afternoon))?\.md$")
@@ -31,6 +34,21 @@ def publish_report_event(report_id: str):
         subscribers = list(SUBSCRIBERS)
     for subscriber in subscribers:
         subscriber.put(message)
+
+
+def publish_ranking_event():
+    with SUBSCRIBERS_LOCK:
+        subscribers = list(SUBSCRIBERS)
+    for subscriber in subscribers:
+        subscriber.put(json.dumps({"type": "ranking"}))
+
+
+def latest_ranking():
+    try:
+        payload = json.loads(RANKING_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) and payload.get("ranking") else {"available": False}
+    except (OSError, json.JSONDecodeError):
+        return {"available": False}
 
 
 def report_metadata(report_id: str) -> dict:
@@ -68,10 +86,19 @@ def read_report(filename: str):
     if not path.exists():
         return None
     stat = path.stat()
+    snapshot = {}
+    try:
+        snapshot = json.loads((SNAPSHOT_DIR / f"{path.stem}.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    # Do not expose private portfolio fields from historical snapshots.
+    view = {key: snapshot.get(key) for key in ("global_markets", "sectors", "market_panorama", "horizon_recommendations", "intraday_review") if key in snapshot}
     return {
         "available": True, **report_metadata(path.stem),
         "updated_at": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
-        "markdown": path.read_text(encoding="utf-8"),
+        "markdown": path.read_text(encoding="utf-8"), "view": view,
     }
 
 
@@ -102,6 +129,8 @@ class ReportHandler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"status": "ok", "report_count": len(list_reports())})
             if path == "/api/reports":
                 return self.send_json(200, {"reports": list_reports()})
+            if path == "/api/ranking/latest":
+                return self.send_json(200, latest_ranking())
             if path == "/api/events":
                 return self.stream_events()
             if path == "/api/reports/latest":
@@ -127,6 +156,28 @@ class ReportHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = unquote(urlparse(self.path).path)
+        if path == "/api/portfolio-analysis":
+            origin = self.headers.get("Origin", "")
+            host = self.headers.get("Host", "")
+            if origin and urlparse(origin).netloc != host:
+                return self.send_json(403, {"error": "同源页面才可请求持仓分析。"})
+            market = str(self.headers.get("X-Report-Market", "a"))
+            if market not in {"a", "hk"}:
+                return self.send_json(400, {"error": "市场参数无效。"})
+            try:
+                request = Request(f"http://127.0.0.1:8765/v1/portfolio-analysis?market={market}",
+                                  headers={"Accept": "application/json"})
+                with urlopen(request, timeout=180) as response:
+                    return self.send_json(200, json.loads(response.read().decode("utf-8")))
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                return self.send_json(502, {"error": f"持仓分析暂不可用：{exc}"})
+        if path == "/api/publish-ranking":
+            if self.client_address[0] not in {"127.0.0.1", "::1"}:
+                return self.send_json(403, {"error": "Local publishing only"})
+            if not latest_ranking().get("ranking"):
+                return self.send_json(400, {"error": "No ranking is available"})
+            publish_ranking_event()
+            return self.send_json(200, {"published": True})
         if path != "/api/publish":
             return self.send_json(404, {"error": "Not found"})
         try:
@@ -158,7 +209,8 @@ class ReportHandler(BaseHTTPRequestHandler):
             while True:
                 try:
                     message = subscriber.get(timeout=20)
-                    chunk = f"event: report\ndata: {message}\n\n".encode("utf-8")
+                    event_name = "ranking" if json.loads(message).get("type") == "ranking" else "report"
+                    chunk = f"event: {event_name}\ndata: {message}\n\n".encode("utf-8")
                 except queue.Empty:
                     chunk = b": keep-alive\n\n"
                 self.wfile.write(chunk)
